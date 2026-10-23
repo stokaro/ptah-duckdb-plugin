@@ -23,21 +23,7 @@ func TestBuild_HappyPath(t *testing.T) {
 	var manifest releasemanifest.Manifest
 	c.Assert(json.Unmarshal(first, &manifest), qt.IsNil)
 	c.Assert(manifest.Provider, qt.Equals, backend.ProviderID)
-	c.Assert(manifest.Engines, qt.HasLen, 1)
-	c.Assert(manifest.Engines[0].ID, qt.Equals, "duckdb")
-	c.Assert(manifest.Engines[0].Lines, qt.Not(qt.HasLen), 0)
-}
-
-func TestBuild_CertifiesNoLine(t *testing.T) {
-	c := qt.New(t)
-	out, err := releasemanifest.Build(backend.Description())
-	c.Assert(err, qt.IsNil)
-	var manifest releasemanifest.Manifest
-	c.Assert(json.Unmarshal(out, &manifest), qt.IsNil)
-	for _, line := range manifest.Engines[0].Lines {
-		c.Assert(line.Support, qt.Equals, "best_effort", qt.Commentf("line %s", line.Line))
-		c.Assert(line.Unprobed, qt.Not(qt.Equals), "", qt.Commentf("line %s", line.Line))
-	}
+	c.Assert(manifest.Engines, qt.HasLen, 0)
 }
 
 func TestBuild_LeavesOutAnEngineWithoutLines(t *testing.T) {

@@ -40,25 +40,9 @@ func TestDescription_DeclaresTheEngine(t *testing.T) {
 	c.Assert(engine.GetIdentifiers().GetIndexNamespace(), qt.Equals, protocol.IdentifierRules_SCHEMA)
 }
 
-func TestDescription_ReleaseLinesAreBestEffortWithAReason(t *testing.T) {
+func TestDescription_DeclaresNoReleaseLine(t *testing.T) {
 	c := qt.New(t)
-	lines := backend.Description().GetEngines()[0].GetReleaseLines()
-	c.Assert(lines, qt.Not(qt.HasLen), 0)
-	for _, line := range lines {
-		c.Assert(line.GetSupport(), qt.Equals, protocol.ReleaseLine_BEST_EFFORT, qt.Commentf("line %s", line.GetLine()))
-		c.Assert(line.GetUnprobed(), qt.Not(qt.Equals), "", qt.Commentf("line %s", line.GetLine()))
-		c.Assert(line.GetImage(), qt.Equals, "", qt.Commentf("line %s", line.GetLine()))
-	}
-}
-
-func TestDescription_ReleaseLinesAreNewestFirst(t *testing.T) {
-	c := qt.New(t)
-	lines := backend.Description().GetEngines()[0].GetReleaseLines()
-	got := make([]string, len(lines))
-	for i, line := range lines {
-		got[i] = line.GetLine()
-	}
-	c.Assert(got, qt.DeepEquals, []string{"2.0", "1.5", "1.4"})
+	c.Assert(backend.Description().GetEngines()[0].GetReleaseLines(), qt.HasLen, 0)
 }
 
 func TestServer_ValidatesWithTheSessionServiceOnly(t *testing.T) {

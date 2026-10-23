@@ -19,8 +19,7 @@ The host has no DuckDB support of its own: it has no DuckDB dialect descriptor, 
 - Provider ID: `github.com/stokaro/ptah-duckdb-plugin`.
 - Engine: `duckdb`, with no alias.
 - Identifier rules: table, column and index names compare without regard to ASCII case, and an index name is unique in its schema, not in its table.
-- Release lines: 2.0, 1.5 and 1.4. The host declares no DuckDB line, so these follow the lines the DuckDB project publishes. DuckDB is an embedded library, so no line names a container image. Every line is best effort and states why it runs
-  no job. The scaffold certifies none.
+- Release lines: none. The host declares no DuckDB line, and a line states what is tested; this provider has no recipe and no job for any DuckDB release yet. `release-lines.json` lists no engine until it does.
 
 ## Roadmap
 
