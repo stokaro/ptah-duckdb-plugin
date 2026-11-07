@@ -23,6 +23,12 @@ func Server() runtime.Server {
 		FeaturePlanner:  duckdb,
 		Locks:           duckdb,
 		Transactions:    duckdb,
+		History:         duckdb,
+		Metadata:        duckdb,
+		MigrationSplits: duckdb,
+		DevProvisioner:  duckdb,
+		DevCleaner:      duckdb,
+		ReplayGuard:     duckdb,
 		CheckComparer:   duckdb,
 	}
 }

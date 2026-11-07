@@ -103,6 +103,7 @@ func (p *Provider) FinishTransaction(ctx context.Context, request *protocol.Fini
 	}
 	if record.tx != nil {
 		current.finish(record, request.GetAction())
+		current.closeReaders(request.GetTransactionId())
 	}
 	result := &protocol.TransactionResult{Outcome: record.outcome}
 	if request.GetAction() == protocol.FinishTransactionRequest_COMMIT && record.outcome != protocol.TransactionResult_COMMITTED ||

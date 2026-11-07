@@ -43,7 +43,8 @@ func TestOpen_FileSession(t *testing.T) {
 	c.Assert(first.GetFeatures(), qt.DeepEquals, []string{
 		provider.InspectFeature, provider.RenderFeature, provider.ExecuteFeature, provider.AnalyzeSQLFeature, provider.ValidateSchemaFeature,
 		provider.PrepareTablesFeature, provider.ProjectTableCreationsFeature, provider.PlanFeaturesFeature, provider.CheckEquivalenceFeature,
-		provider.LocksFeature, provider.TransactionsFeature, provider.NormalizeValuesFeature,
+		provider.LocksFeature, provider.TransactionsFeature, provider.HistoryFeature, provider.MetadataFeature, provider.DevDatabaseFeature,
+		provider.DevCleanupFeature, provider.ReplayGuardFeature, provider.NormalizeValuesFeature,
 	})
 
 	second := openSession(c, p, fileAddress(path))

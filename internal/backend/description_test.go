@@ -50,8 +50,9 @@ func TestDescription_DeclaresTheLinkedReleaseLine(t *testing.T) {
 	c.Assert(older[0].GetUnprobed(), qt.Equals, "the provider runs the engine it links, version 2.0.0, which this host reads no evidence of")
 }
 
-// The provider owns its tables' lifecycle, so it lists the read, the planning
-// services and the execution beside what a read carries.
+// The provider owns its tables' lifecycle and keeps the migrator's records,
+// so it lists the read, the planning services, the execution, the history
+// and the dev database services beside what a read carries.
 func TestDescription_ListsTheFeatures(t *testing.T) {
 	c := testcheck.New(t)
 	description := backend.Description()
@@ -60,7 +61,8 @@ func TestDescription_ListsTheFeatures(t *testing.T) {
 		provider.ValidateSchemaFeature, provider.PrepareTablesFeature, provider.ProjectTableCreationsFeature, provider.ColumnsFeature,
 		provider.PlanFeaturesFeature, provider.PlanningLifecycleFeature, provider.PrimaryKeyChangesFeature, provider.ConstraintChangesFeature,
 		provider.CheckEquivalenceFeature, provider.PlanningPolicyFeature, provider.PlanningStatementStyleFeature, provider.LocksFeature,
-		provider.TransactionsFeature, provider.ObservedColumnsFeature, provider.ObservedPrimaryKeysFeature, provider.ObservedConstraintsFeature,
+		provider.TransactionsFeature, provider.HistoryFeature, provider.MetadataFeature, provider.MigrationSplitFeature, provider.DevDatabaseFeature,
+		provider.DevCleanupFeature, provider.ReplayGuardFeature, provider.ObservedColumnsFeature, provider.ObservedPrimaryKeysFeature, provider.ObservedConstraintsFeature,
 		provider.ObservedIndexesFeature, provider.NormalizeValuesFeature, provider.CommonObjectsFeature, provider.CommonNamespacesFeature,
 		provider.LinkedReleaseLinesFeature,
 	}
@@ -109,6 +111,6 @@ func TestServer_Validates(t *testing.T) {
 func TestServer_RefusesAServiceTheDescriptionDoesNotAdvertise(t *testing.T) {
 	c := testcheck.New(t)
 	server := backend.Server()
-	server.Description.Features = append(server.Description.Features, provider.HistoryFeature)
+	server.Description.Features = append(server.Description.Features, provider.SeedsFeature)
 	c.Assert(server.Validate(), qt.ErrorIs, provider.ErrProtocol)
 }
