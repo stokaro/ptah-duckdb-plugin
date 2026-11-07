@@ -2,13 +2,13 @@ package tableplan
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/catalog"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/typeloss"
 )
 
 // Declared says how DuckDB holds a declared table once it is created: its
@@ -20,21 +20,16 @@ type Declared struct {
 	Hold func(*protocol.DeclaredTable) (catalog.Table, error)
 }
 
-// lengthType is a text type with a length, which DuckDB accepts and drops,
-// alone or as the element of a list or an array: VARCHAR(255) is held as
-// VARCHAR and VARCHAR(5)[] as VARCHAR[].
-var lengthType = regexp.MustCompile(`(?i)^\s*(?:VARCHAR|CHAR|CHARACTER VARYING|CHARACTER|BPCHAR|STRING|TEXT|NVARCHAR|NCHAR)\s*\(\s*\d+\s*\)\s*((?:\[\s*\d*\s*\]\s*)*)$`)
-
 // CreationNotes are the notes a table's creation carries for what the
-// declaration writes and DuckDB does not keep: a VARCHAR length, which
-// DuckDB accepts and neither keeps nor enforces, and a constraint name,
-// since DuckDB names every constraint itself. The plan converges on both:
-// the read reports VARCHAR and DuckDB's names, and the planner compares the
-// declaration in the same terms.
+// declaration writes and DuckDB does not keep: a text or bit length and a
+// timestamp precision, which DuckDB accepts and holds with a type of its own
+// (see typeloss), and a constraint name, since DuckDB names every constraint
+// itself. The plan converges on both: the read reports DuckDB's types and
+// names, and the planner compares the declaration in the same terms.
 func (d Declared) CreationNotes(subject *protocol.ComparisonIdentity, table *protocol.DeclaredTable) []string {
 	var notes []string
 	for _, column := range table.GetColumns() {
-		if note := LengthNote(subject, table, column); note != "" {
+		if note := TypeNote(subject, table, column); note != "" {
 			notes = append(notes, note)
 		}
 	}
@@ -45,17 +40,29 @@ func (d Declared) CreationNotes(subject *protocol.ComparisonIdentity, table *pro
 	return notes
 }
 
-// LengthNote is the note for a declared column whose type states a length
-// DuckDB drops, or the empty string.
-func LengthNote(subject *protocol.ComparisonIdentity, table *protocol.DeclaredTable, column *protocol.DeclaredColumn) string {
+// TypeNote is the note for a declared column whose type states something
+// DuckDB does not keep, or the empty string.
+func TypeNote(subject *protocol.ComparisonIdentity, table *protocol.DeclaredTable, column *protocol.DeclaredColumn) string {
 	declared := ColumnType(table, column)
-	match := lengthType.FindStringSubmatch(declared)
-	if match == nil {
+	loss, lost := typeloss.Of(declared)
+	if !lost {
 		return ""
 	}
-	held := "VARCHAR" + strings.Join(strings.Fields(match[1]), "")
-	return fmt.Sprintf("DUCKDB: column %q of table %s is declared %s; DuckDB keeps no length and holds it as %s, which takes text of any length.",
-		column.GetName(), phrase(subject), declared, held)
+	return fmt.Sprintf("DUCKDB: column %q of table %s is declared %s; %s", column.GetName(), phrase(subject), declared, loss.Note)
+}
+
+// DeclaredLoss is the declared type of a column whose type states something
+// DuckDB does not keep, which an operation carries so its render can report
+// the omission, or the empty string.
+func DeclaredLoss(table *protocol.DeclaredTable, column *protocol.DeclaredColumn) string {
+	if column == nil {
+		return ""
+	}
+	declared := strings.TrimSpace(ColumnType(table, column))
+	if _, lost := typeloss.Of(declared); !lost {
+		return ""
+	}
+	return declared
 }
 
 // constraintNames lists, quoted, the constraint names a declaration gives.

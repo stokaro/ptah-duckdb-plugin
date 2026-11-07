@@ -5,15 +5,19 @@ package integration_test
 import (
 	"context"
 	"database/sql"
+	"debug/buildinfo"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/duckdb/duckdb-go/v2"
 	qt "github.com/frankban/quicktest"
+	"golang.org/x/mod/semver"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/backend"
 )
@@ -41,6 +45,26 @@ func hostManifest(c *qt.C) (host, manifest string) {
 	manifest = filepath.Join(c.TempDir(), "providers.json")
 	c.Assert(os.WriteFile(manifest, encoded, 0o600), qt.IsNil)
 	return host, manifest
+}
+
+// viewQueriesSince is the provider-sdk version from which a host asks the
+// provider whether a declared view's query and the held one are one query
+// (contract 25.33): the commit of Ptah's master that added the call. Every
+// later commit and release orders after its pseudo-version.
+const viewQueriesSince = "v0.30.1-0.20261107163439-64dc845e91a2"
+
+// hostComparesViewQueries reports whether the host asks the provider whether
+// two view queries are one, by the provider-sdk the host binary was built
+// with. A host that predates the call compares view queries by its own fold
+// of their texts.
+func hostComparesViewQueries(c *qt.C) bool {
+	c.Helper()
+	host, _ := hostManifest(c)
+	info, err := buildinfo.ReadFile(host)
+	c.Assert(err, qt.IsNil)
+	index := slices.IndexFunc(info.Deps, func(module *debug.Module) bool { return module.Path == "github.com/stokaro/ptah/provider-sdk" })
+	c.Assert(index >= 0, qt.IsTrue, qt.Commentf("the host binary %s names no provider-sdk", host))
+	return semver.Compare(info.Deps[index].Version, viewQueriesSince) >= 0
 }
 
 // hostCommand runs one command of the host with this provider selected for

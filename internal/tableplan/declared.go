@@ -118,10 +118,14 @@ func HeldColumn(column catalog.Column) tableop.Column {
 // CreateTable is the operation that creates a declared table as DuckDB holds
 // it: the columns, key and CHECKs of held, which the backend read back from a
 // scratch creation of the declaration, and the declaration's foreign keys.
+// A column whose declared type states something DuckDB does not keep carries
+// that type too, so the render reports what it leaves out.
 func CreateTable(desired *protocol.DeclaredTable, held catalog.Table) (tableop.Operation, error) {
 	operation := tableop.Operation{Action: tableop.CreateTable}
 	for _, column := range held.Columns {
-		operation.Columns = append(operation.Columns, HeldColumn(column))
+		created := HeldColumn(column)
+		created.Declared = DeclaredLoss(desired, declaredColumn(desired, column.Name))
+		operation.Columns = append(operation.Columns, created)
 	}
 	if held.PrimaryKey != nil {
 		operation.PrimaryKey = slices.Clone(held.PrimaryKey.Columns)

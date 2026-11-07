@@ -52,7 +52,8 @@ func TestDescription_DeclaresTheLinkedReleaseLine(t *testing.T) {
 
 // The provider owns its tables' lifecycle and keeps the migrator's records,
 // so it lists the read, the planning services, the execution, the history
-// and the dev database services beside what a read carries.
+// and the dev database services beside what a read carries, and it compares
+// view queries and reports what a render leaves out.
 func TestDescription_ListsTheFeatures(t *testing.T) {
 	c := testcheck.New(t)
 	description := backend.Description()
@@ -65,7 +66,8 @@ func TestDescription_ListsTheFeatures(t *testing.T) {
 		provider.DevDatabaseFeature, provider.DevCleanupFeature, provider.ReplayGuardFeature, provider.ObservedColumnsFeature,
 		provider.ObservedPrimaryKeysFeature, provider.ObservedConstraintsFeature, provider.ObservedUniqueConstraintsFeature,
 		provider.ObservedIndexesFeature, provider.ColumnCollationsFeature, provider.EnumColumnsFeature, provider.NormalizeValuesFeature,
-		provider.CommonObjectsFeature, provider.CommonNamespacesFeature, provider.LinkedReleaseLinesFeature,
+		provider.CommonObjectsFeature, provider.CommonNamespacesFeature, provider.ViewQueryEquivalenceFeature, provider.RenderOmissionsFeature,
+		provider.LinkedReleaseLinesFeature,
 	}
 	c.Assert(description.GetFeatures(), qt.DeepEquals, want)
 	c.Assert(description.GetEngines()[0].GetFeatures(), qt.DeepEquals, want)
@@ -95,11 +97,15 @@ func TestDescription_DeclaresThePlanningService(t *testing.T) {
 	c.Assert(engine.GetEnumColumns().GetForm(), qt.Equals, protocol.EnumColumns_VALUES_TYPE)
 }
 
-func TestDescription_NeedsTheContractItIsBuiltWith(t *testing.T) {
+// The provider needs contract 25.32, whose table ownership is its only claim
+// on DuckDB's tables, whatever later contract the SDK it is built with
+// speaks.
+func TestDescription_NeedsTheContractOfTableOwnership(t *testing.T) {
 	c := testcheck.New(t)
 	minimum := provider.MinimumContract(backend.Description())
 	c.Assert(minimum.GetMajor(), qt.Equals, provider.Revision)
-	c.Assert(minimum.GetMinor(), qt.Equals, provider.ContractMinor)
+	c.Assert(minimum.GetMinor(), qt.Equals, uint32(32))
+	c.Assert(minimum.GetMinor() <= provider.ContractMinor, qt.IsTrue)
 }
 
 func TestServer_Validates(t *testing.T) {

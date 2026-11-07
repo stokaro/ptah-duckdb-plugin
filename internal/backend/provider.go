@@ -66,7 +66,9 @@ const semanticIdentity = "duckdb-1"
 // provider: 25.32, whose table ownership (planning.table-ownership) is the
 // provider's only claim on the engine's tables. A host of an earlier
 // contract would hand the provider no table to plan. 25.32 also states the
-// working directory a relative duckdb:// path resolves against (25.30).
+// working directory a relative duckdb:// path resolves against (25.30). The
+// SDK the provider is built with speaks a later contract, whose additions
+// the provider uses only when the host lists them.
 const minimumContract = 32
 
 // Provider serves the duckdb engine. The zero value is ready to use, and one
@@ -176,9 +178,14 @@ func providerFeatures() []string {
 		// The provider normalizes its table operations.
 		provider.NormalizeValuesFeature,
 		// Views, sequences, comments and schemas travel on the common-object
-		// wire.
+		// wire, and the provider decides whether a declared view's query and
+		// the one DuckDB holds are one query; see CompareViewQueries.
 		provider.CommonObjectsFeature,
 		provider.CommonNamespacesFeature,
+		provider.ViewQueryEquivalenceFeature,
+		// A render names each column whose declared type states what DuckDB
+		// does not keep, such as a VARCHAR length; see typeloss.
+		provider.RenderOmissionsFeature,
 		// The release line names the DuckDB the executable links as its
 		// evidence; see identity.go.
 		provider.LinkedReleaseLinesFeature,

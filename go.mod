@@ -7,8 +7,9 @@ toolchain go1.27.3
 require (
 	github.com/duckdb/duckdb-go/v2 v2.20000.0
 	github.com/frankban/quicktest v1.14.6
-	github.com/stokaro/ptah/provider-sdk v0.30.0
+	github.com/stokaro/ptah/provider-sdk v0.31.0
 	github.com/stokaro/ptah/sqlsyntax v0.1.0
+	golang.org/x/mod v0.41.0
 	golang.org/x/sys v0.49.0
 	google.golang.org/grpc v1.86.0-dev
 	google.golang.org/protobuf v1.36.12
@@ -47,7 +48,6 @@ require (
 	go.duckdb.org/libduckdb/linux-arm64 v0.20000.0 // indirect
 	go.duckdb.org/libduckdb/windows-amd64 v0.20000.0 // indirect
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
-	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260924152758-ed294f943157 // indirect

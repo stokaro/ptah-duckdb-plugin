@@ -22,13 +22,11 @@ import (
 // a second session of the provider process that holds the lock must find it
 // busy, and a second process must fail to open the database at all.
 //
-// One check fails, by the contract rather than by the provider. The
-// provider's only planning service owns the engine's tables, so under a host
-// that lists no two-way feature the negotiated description has no planning
-// service, and the SDK refuses that host. The suite accepts such a refusal
-// from a host that leaves out one feature, and counts it as a failure from a
-// host that lists none. The failure is pinned here so that any other one, or
-// a change of this one, is seen.
+// The provider's only planning service owns the engine's tables, so under a
+// host that lists no two-way feature, and under a contract 25.0 host, the
+// negotiated description has no planning service and the SDK refuses that
+// host. The suite counts that refusal as the answer negotiation asks for, as
+// it does for a host that leaves out one feature, so every check passes.
 func TestConformance(t *testing.T) {
 	c := testcheck.New(t)
 	binary, digest := providerBinary(c)
@@ -38,12 +36,12 @@ func TestConformance(t *testing.T) {
 		Live:       &conformance.Live{Address: fileAddress(seedFile(c, "conformance.duckdb", richSchema)), InProcessLocks: true},
 	})
 	c.Assert(err, qt.IsNil)
-	c.Assert(failures(report), qt.DeepEquals, map[string]string{
-		"description.valid": "Describe under a host that lists no two-way feature failed: " +
-			"FailedPrecondition: invalid provider protocol exchange: missing or duplicate planning service",
-	})
+	c.Assert(failures(report), qt.DeepEquals, make(map[string]string))
 	statuses := checkStatuses(report)
-	for _, id := range []string{"negotiation.description", "live.open", "live.inspect", "live.locks", "live.transactions"} {
+	for _, id := range []string{
+		"description.valid", "handshake.contract-25.0-host", "negotiation.description", "live.open", "live.inspect", "live.locks",
+		"live.transactions",
+	} {
 		c.Assert(statuses[id], qt.Equals, conformance.Passed, qt.Commentf("check %s", id))
 	}
 }
