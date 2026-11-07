@@ -1,7 +1,7 @@
 // Command ptah-plugin-duckdb serves DuckDB through the experimental Ptah
 // protocol. It embeds DuckDB through the official Go driver, which links the
 // DuckDB library with cgo, and serves sessions on database files and
-// in-memory databases. It serves no schema service yet.
+// in-memory databases, and reads their schemas.
 package main
 
 import (
@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	if err := runtime.Serve(runtime.Server{Description: backend.Description(), Sessions: backend.New()}); err != nil {
+	if err := runtime.Serve(backend.Server()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

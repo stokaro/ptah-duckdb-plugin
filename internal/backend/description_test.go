@@ -6,7 +6,6 @@ import (
 	qt "github.com/frankban/quicktest"
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 	"github.com/stokaro/ptah/provider-sdk/provider"
-	"github.com/stokaro/ptah/provider-sdk/runtime"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/backend"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/testcheck"
@@ -34,13 +33,22 @@ func TestDescription_DeclaresTheEngine(t *testing.T) {
 	c.Assert(engine.GetReleaseLines(), qt.HasLen, 0)
 }
 
-// The provider serves sessions and nothing else, so the only feature it lists
-// is the reasons its refusals carry.
-func TestDescription_ListsTheSessionFeaturesOnly(t *testing.T) {
+// The provider reads schemas and plans nothing yet, so it lists the read and
+// what a read carries.
+func TestDescription_ListsTheReadFeatures(t *testing.T) {
 	c := testcheck.New(t)
 	description := backend.Description()
-	c.Assert(description.GetFeatures(), qt.DeepEquals, []string{provider.ErrorReasonsFeature})
-	c.Assert(description.GetEngines()[0].GetFeatures(), qt.DeepEquals, []string{provider.ErrorReasonsFeature})
+	want := []string{
+		provider.InspectFeature, provider.ErrorReasonsFeature,
+		provider.ObservedColumnsFeature, provider.ObservedPrimaryKeysFeature, provider.ObservedConstraintsFeature, provider.ObservedIndexesFeature,
+		provider.NormalizeValuesFeature, provider.CommonObjectsFeature, provider.CommonNamespacesFeature,
+	}
+	c.Assert(description.GetFeatures(), qt.DeepEquals, want)
+	c.Assert(description.GetEngines()[0].GetFeatures(), qt.DeepEquals, want)
+	c.Assert(description.GetEngines()[0].GetCommonObjects().GetKinds(), qt.DeepEquals, []protocol.CommonObjectSupport_Kind{
+		protocol.CommonObjectSupport_VIEW, protocol.CommonObjectSupport_SEQUENCE, protocol.CommonObjectSupport_COMMENT,
+		protocol.CommonObjectSupport_SCHEMA,
+	})
 }
 
 func TestDescription_NeedsTheContractItIsBuiltWith(t *testing.T) {
@@ -50,16 +58,14 @@ func TestDescription_NeedsTheContractItIsBuiltWith(t *testing.T) {
 	c.Assert(minimum.GetMinor(), qt.Equals, provider.ContractMinor)
 }
 
-func TestServer_ValidatesWithTheSessionServiceOnly(t *testing.T) {
+func TestServer_Validates(t *testing.T) {
 	c := testcheck.New(t)
-	server := runtime.Server{Description: backend.Description(), Sessions: backend.New()}
-	c.Assert(server.Validate(), qt.IsNil)
+	c.Assert(backend.Server().Validate(), qt.IsNil)
 }
 
 func TestServer_RefusesAServiceTheDescriptionDoesNotAdvertise(t *testing.T) {
 	c := testcheck.New(t)
-	description := backend.Description()
-	description.Features = append(description.Features, provider.InspectFeature)
-	server := runtime.Server{Description: description, Sessions: backend.New()}
+	server := backend.Server()
+	server.Description.Features = append(server.Description.Features, provider.RenderFeature)
 	c.Assert(server.Validate(), qt.ErrorIs, provider.ErrProtocol)
 }
