@@ -24,7 +24,9 @@ func TestBuild_HappyPath(t *testing.T) {
 	var manifest releasemanifest.Manifest
 	c.Assert(json.Unmarshal(first, &manifest), qt.IsNil)
 	c.Assert(manifest.Provider, qt.Equals, backend.ProviderID)
-	c.Assert(manifest.Engines, qt.HasLen, 0)
+	c.Assert(manifest.Engines, qt.DeepEquals, []releasemanifest.Engine{{ID: "duckdb", Lines: []releasemanifest.Line{{
+		Line: "2.0", Support: "certified", Linked: "2.0.0", Note: "The provider executable links this DuckDB, and every test of the provider runs it.",
+	}}}})
 }
 
 func TestBuild_LeavesOutAnEngineWithoutLines(t *testing.T) {

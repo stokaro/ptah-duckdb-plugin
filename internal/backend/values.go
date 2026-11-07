@@ -7,19 +7,26 @@ import (
 	providerruntime "github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/stokaro/ptah-duckdb-plugin/internal/tableop"
 )
 
-// NormalizeValues normalizes the provider's own models. The provider declares
-// none yet: its observations carry no facet. The SDK requires the service
-// beside complete column observations, so it answers an empty batch and
-// refuses any value, which no host sends to a provider that declares no
-// model.
+// NormalizeValues normalizes the table operations the provider planned. The
+// lifecycle model declares no value, so every other value is refused.
 func (*Provider) NormalizeValues(ctx context.Context, request *protocol.NormalizeValuesRequest) (*protocol.NormalizedValues, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, status.FromContextError(err).Err()
+	result := &protocol.NormalizedValues{Complete: true}
+	for _, input := range request.GetValues() {
+		if err := ctx.Err(); err != nil {
+			return nil, status.FromContextError(err).Err()
+		}
+		if input.GetValue().GetKind() != tableop.Kind {
+			return nil, providerruntime.ErrorWithReason(codes.InvalidArgument, "the provider normalizes its table operations only; its table model has no value")
+		}
+		normalized, err := tableop.Normalize(input)
+		if err != nil {
+			return nil, providerruntime.ErrorWithReason(codes.InvalidArgument, err.Error())
+		}
+		result.Values = append(result.Values, normalized)
 	}
-	if len(request.GetValues()) != 0 {
-		return nil, providerruntime.ErrorWithReason(codes.InvalidArgument, "the provider declares no value model to normalize")
-	}
-	return &protocol.NormalizedValues{Complete: true}, nil
+	return result, nil
 }

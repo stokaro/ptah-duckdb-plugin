@@ -53,6 +53,8 @@ type Registry struct {
 type instance struct {
 	db     *sql.DB
 	access Access
+	// key names the database for the locks of the process's sessions.
+	key string
 	// path is the canonical path of a file instance, and file what Stat
 	// reported for it once it existed; both are empty for an in-memory one.
 	path string
@@ -72,6 +74,15 @@ type Handle struct {
 // Conn is the session's connection. DuckDB runs one statement at a time on a
 // connection, so the caller serializes its use.
 func (h *Handle) Conn() *sql.Conn { return h.conn }
+
+// NewConn takes another connection of the session's database, for a
+// transaction that must not run on the session's own connection. The caller
+// closes it.
+func (h *Handle) NewConn(ctx context.Context) (*sql.Conn, error) { return h.instance.db.Conn(ctx) }
+
+// Key names the database the handle reaches: the same key for every session
+// of one file or one in-memory database of this process.
+func (h *Handle) Key() string { return h.instance.key }
 
 // Access is the access mode the instance was opened in.
 func (h *Handle) Access() Access { return h.instance.access }
@@ -125,7 +136,7 @@ func (r *Registry) OpenFile(ctx context.Context, path string, access Access) (*H
 	if err != nil {
 		return nil, classifyOpen(err, access)
 	}
-	opened := &instance{db: sql.OpenDB(connector), access: access, path: canonical}
+	opened := &instance{db: sql.OpenDB(connector), access: access, path: canonical, key: "file:" + canonical}
 	if opened.file, err = os.Stat(path); err != nil {
 		_ = opened.db.Close()
 		return nil, refuse(codes.Unavailable, "the database file is not there after DuckDB opened it")
@@ -155,7 +166,7 @@ func (r *Registry) OpenMemory(ctx context.Context, name string) (*Handle, error)
 	if err != nil {
 		return nil, refuse(codes.Unavailable, "DuckDB could not create an in-memory database")
 	}
-	opened := &instance{db: sql.OpenDB(connector)}
+	opened := &instance{db: sql.OpenDB(connector), key: "memory:" + name}
 	handle, err := r.attach(ctx, opened)
 	if err != nil {
 		_ = opened.db.Close()

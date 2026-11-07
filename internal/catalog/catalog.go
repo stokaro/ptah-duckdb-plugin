@@ -81,8 +81,11 @@ type Column struct {
 	// computes when it reads the row (VIRTUAL; it refuses STORED).
 	Generated *string
 	// Unique is set for a column a single-column UNIQUE constraint covers.
-	Unique  bool
-	Comment string
+	Unique bool
+	// Collation is the collation the column's definition names, which only
+	// the table's CREATE statement reports.
+	Collation string
+	Comment   string
 }
 
 // Key is a named list of columns in order.

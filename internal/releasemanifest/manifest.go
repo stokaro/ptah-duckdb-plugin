@@ -13,10 +13,13 @@ import (
 
 // Line is one release line of an engine.
 type Line struct {
-	Line     string `json:"line"`
-	Label    string `json:"label"`
-	Support  string `json:"support"`
-	Image    string `json:"image,omitempty"`
+	Line    string `json:"line"`
+	Label   string `json:"label"`
+	Support string `json:"support"`
+	Image   string `json:"image,omitempty"`
+	// Linked is the version of the engine's library the provider links,
+	// which a certified line names in place of an image.
+	Linked   string `json:"linked,omitempty"`
 	Unprobed string `json:"unprobed,omitempty"`
 	Note     string `json:"note,omitempty"`
 }
@@ -46,7 +49,7 @@ func Build(description *protocol.Description) ([]byte, error) {
 		for i, line := range engine.GetReleaseLines() {
 			lines[i] = Line{
 				Line: line.GetLine(), Label: line.GetLabel(), Support: strings.ToLower(line.GetSupport().String()),
-				Image: line.GetImage(), Unprobed: line.GetUnprobed(), Note: line.GetNote(),
+				Image: line.GetImage(), Linked: line.GetLinked(), Unprobed: line.GetUnprobed(), Note: line.GetNote(),
 			}
 		}
 		manifest.Engines = append(manifest.Engines, Engine{ID: engine.GetId(), Lines: lines})

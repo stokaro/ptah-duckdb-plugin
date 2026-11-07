@@ -246,7 +246,7 @@ func observedColumn(column catalog.Column, ordinal int, primaryKey bool) *protoc
 	}
 	observed := &protocol.ObservedColumn{
 		Name: column.Name, DataType: column.Type, FormattedType: column.Type, ColumnType: column.Type, IsNullable: nullable,
-		DefaultExpression: column.Default, OrdinalPosition: int64(ordinal), PrimaryKey: primaryKey, Unique: column.Unique,
+		DefaultExpression: column.Default, OrdinalPosition: int64(ordinal), PrimaryKey: primaryKey, Unique: column.Unique, Collation: column.Collation,
 	}
 	if column.Parsed.Kind == coltype.Decimal {
 		observed.NumericPrecision, observed.NumericScale = new(int64(column.Parsed.Precision)), new(int64(column.Parsed.Scale))

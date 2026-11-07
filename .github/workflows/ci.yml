@@ -132,3 +132,55 @@ jobs:
       - name: Compare with the host's lint contract
         if: steps.host.outputs.skip != 'true'
         run: go run ./internal/cmd/lintcontract -host .host-contract/.golangci.yml
+  # The host-driven tests run Ptah's own binary with this provider selected
+  # for duckdb: schema apply, migrations generate and migrations lint, against
+  # database files the tests read back. The release leg builds the newest Ptah
+  # release this provider runs on and blocks; it is skipped until a release
+  # speaks the provider's minimum contract. The master leg builds Ptah's
+  # master and does not block, because the provider follows a host change in
+  # a change of its own. The tests skip without a host, so a skip here fails
+  # the leg.
+  host:
+    name: host (${{ matrix.host }})
+    runs-on: ubuntu-24.04
+    continue-on-error: ${{ matrix.host == 'master' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [release, master]
+    env:
+      GOWORK: 'off'
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Resolve the host
+        id: host
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST: ${{ matrix.host }}
+        run: scripts/resolve-host.sh "$HOST"
+      - name: Check out the host
+        if: steps.host.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: stokaro/ptah
+          ref: ${{ steps.host.outputs.ref }}
+          path: .host
+      - name: Build the host
+        if: steps.host.outputs.skip != 'true'
+        working-directory: .host
+        run: go build -o "$RUNNER_TEMP/ptah" ./cmd/ptah
+      - name: Host-driven tests
+        if: steps.host.outputs.skip != 'true'
+        env:
+          PTAH_HOST_TEST_BIN: ${{ runner.temp }}/ptah
+        run: |
+          set -o pipefail
+          go test -race -tags integration ./integration -run '^TestHost' -count=1 -v -timeout 30m | tee "$RUNNER_TEMP/host-tests.log"
+          if grep -E '^[[:space:]]*--- SKIP' "$RUNNER_TEMP/host-tests.log"; then
+            echo "a host-driven test skipped" >&2
+            exit 1
+          fi

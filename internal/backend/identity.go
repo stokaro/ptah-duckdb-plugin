@@ -1,6 +1,12 @@
 package backend
 
-import protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+import (
+	"strings"
+
+	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+
+	"github.com/stokaro/ptah-duckdb-plugin/internal/duckdbversion"
+)
 
 // aliases lists the other names the engine answers to. The host catalog
 // reserves none for DuckDB.
@@ -20,9 +26,16 @@ func identifierRules() *protocol.IdentifierRules {
 	}
 }
 
-// releaseLines declares no DuckDB release line. The provider embeds one
-// DuckDB, which every test runs against, but the contract lets a line claim
-// testing only with an image that runs it, and an embedded engine has none: a
-// line without an image may only be best effort, which would understate what
-// the tests run. The gap is recorded in the README.
-func releaseLines() []*protocol.ReleaseLine { return make([]*protocol.ReleaseLine, 0) }
+// releaseLines declares the one DuckDB release line the provider serves: the
+// line of the library the executable links, certified by that link, since
+// every test of the provider runs it. The line is the version's major and
+// minor, so 2.0.0 is line 2.0. A host that does not read linked release lines
+// receives the line as best effort.
+func releaseLines() []*protocol.ReleaseLine {
+	linked := strings.TrimPrefix(duckdbversion.Library, "v")
+	parts := strings.SplitN(linked, ".", 3)
+	return []*protocol.ReleaseLine{{
+		Line: parts[0] + "." + parts[1], Support: protocol.ReleaseLine_CERTIFIED, Linked: linked,
+		Note: "The provider executable links this DuckDB, and every test of the provider runs it.",
+	}}
+}

@@ -311,3 +311,93 @@ func (s *scanner) spanOf(from, to int) span {
 	tokens := s.tokens[from:to]
 	return span{tokens: tokens, text: strings.TrimSpace(s.text[tokens[0].start:tokens[len(tokens)-1].end])}
 }
+
+// ColumnClauses are the clauses of one column's definition that DuckDB's
+// catalog functions do not report, read from the table's CREATE statement.
+type ColumnClauses struct {
+	// Collation is the name after COLLATE, as written, or empty.
+	Collation string
+	// Compression is set by USING COMPRESSION.
+	Compression bool
+}
+
+// constraintWords start a table constraint rather than a column.
+var constraintWords = []string{"PRIMARY", "UNIQUE", "CHECK", "FOREIGN", "CONSTRAINT"}
+
+// ParseTableColumns reads `CREATE TABLE <name> (<element>, ...)` with an
+// optional final semicolon and returns the clauses of each column, by the
+// column's name as written. A table constraint is skipped.
+func ParseTableColumns(statement string) (map[string]ColumnClauses, error) {
+	tokens, err := tokenize(statement)
+	if err != nil {
+		return nil, err
+	}
+	s := &scanner{tokens: tokens, text: statement}
+	if !s.keyword("CREATE") || !s.keyword("TABLE") || !s.qualifiedName() {
+		return nil, shape("a table statement without its name")
+	}
+	elements, err := s.parenthesized()
+	if err != nil {
+		return nil, err
+	}
+	s.punct(";")
+	if !s.done() {
+		return nil, shape("a table statement with a clause after its columns")
+	}
+	result := make(map[string]ColumnClauses, len(elements))
+	for _, element := range elements {
+		first := element.tokens[0]
+		if first.kind == bareWord && slicesContainsFold(constraintWords, first.value) {
+			continue
+		}
+		if first.kind != bareWord && first.kind != quotedName {
+			return nil, shape("a column without a name")
+		}
+		result[first.value] = columnClauses(element.tokens[1:])
+	}
+	return result, nil
+}
+
+// columnClauses reads COLLATE and USING COMPRESSION outside parentheses.
+func columnClauses(tokens []token) ColumnClauses {
+	var clauses ColumnClauses
+	depth := 0
+	for i, current := range tokens {
+		switch {
+		case current.kind == punctuation && current.value == "(":
+			depth++
+		case current.kind == punctuation && current.value == ")":
+			depth--
+		case depth != 0 || current.kind != bareWord:
+		case strings.EqualFold(current.value, "COLLATE"):
+			clauses.Collation = collationName(tokens[i+1:])
+		case strings.EqualFold(current.value, "USING") && i+1 < len(tokens) && strings.EqualFold(tokens[i+1].value, "COMPRESSION"):
+			clauses.Compression = true
+		}
+	}
+	return clauses
+}
+
+// collationName reads a collation name, which may be dotted: nocase.noaccent.
+func collationName(tokens []token) string {
+	var parts []string
+	for i := 0; i < len(tokens); i += 2 {
+		if tokens[i].kind != bareWord && tokens[i].kind != quotedName {
+			break
+		}
+		parts = append(parts, tokens[i].value)
+		if i+1 >= len(tokens) || tokens[i+1].kind != punctuation || tokens[i+1].value != "." {
+			break
+		}
+	}
+	return strings.Join(parts, ".")
+}
+
+func slicesContainsFold(words []string, word string) bool {
+	for _, candidate := range words {
+		if strings.EqualFold(candidate, word) {
+			return true
+		}
+	}
+	return false
+}

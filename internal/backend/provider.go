@@ -13,7 +13,14 @@
 // describes its scope completely or fails with a reason that names what it
 // does not describe.
 //
-// The provider plans, renders and runs nothing yet.
+// The provider owns the lifecycle of the engine's tables: ValidateSchema
+// checks a declaration offline, the table services say how DuckDB holds a
+// declared table (asking a private in-memory database, see the scratch
+// package), and the planning service plans every create, change and drop as
+// DuckDB statements or refuses it by name (see the tableplan package). Render
+// writes a plan's statements, Execute runs them in the host's transaction,
+// and AnalyzeSQL splits migration files as DuckDB reads them (see the sqltext
+// package).
 package backend
 
 import (
@@ -25,6 +32,10 @@ import (
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/buildversion"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/instances"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/ownership"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/scratch"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/tableop"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/tableplan"
 )
 
 // ProviderID is the identity of this provider and the namespace of its model
@@ -45,9 +56,12 @@ const defaultSchema = "main"
 const semanticIdentity = "duckdb-1"
 
 // minimumContract is the oldest contract a host must speak to start the
-// provider: the one the SDK it is built with speaks. An older host is refused
-// before a session opens.
-const minimumContract = 29
+// provider: 25.30, which states that the host starts the provider in its own
+// working directory. A relative duckdb:// path resolves against that
+// directory, so under a host that did not promise it the same address could
+// name another file. The namespaces of 25.29 and the linked release lines of
+// 25.30 are negotiated.
+const minimumContract = 30
 
 // Provider serves the duckdb engine. The zero value is ready to use, and one
 // value serves every session of the process.
@@ -55,6 +69,13 @@ type Provider struct {
 	mu        sync.Mutex
 	sessions  map[string]*session
 	instances instances.Registry
+	// scratch answers how DuckDB holds what a declaration writes; see the
+	// scratch package.
+	scratch scratch.Engine
+	// locks are the locks the process's sessions hold, by database and
+	// name; see locks.go. lockMu guards them.
+	lockMu sync.Mutex
+	locks  map[lockKey]heldLock
 }
 
 // session is one open session: a connection of its own to a database the
@@ -66,6 +87,13 @@ type session struct {
 	// database is the catalog name DuckDB gives the database: the file's
 	// name without its extension, or memory.
 	database string
+	// lockIDs are the session's lock IDs and the outcome of each; see
+	// locks.go. Provider.lockMu guards them.
+	lockIDs map[string]*lockRecord
+	// transactions are the session's transaction handles by ID, and active
+	// the one whose transaction is open; see transactions.go. mu guards them.
+	transactions map[string]*transaction
+	active       string
 }
 
 // New returns a provider with no open session.
@@ -75,21 +103,49 @@ func New() *Provider { return &Provider{} }
 func providerFeatures() []string {
 	return []string{
 		provider.InspectFeature,
+		provider.RenderFeature,
+		provider.ExecuteFeature,
+		provider.AnalyzeSQLFeature,
 		// A failed call carries a reason the provider wrote.
 		provider.ErrorReasonsFeature,
+		// The provider owns the lifecycle of the engine's tables: it checks a
+		// declaration, states its key columns, predicts what a creation holds,
+		// judges columns in DuckDB's spelling, and plans every statement
+		// through its planning service; see tableplan.
+		provider.ValidateSchemaFeature,
+		provider.PrepareTablesFeature,
+		provider.ProjectTableCreationsFeature,
+		provider.ColumnsFeature,
+		provider.PlanFeaturesFeature,
+		provider.PlanningLifecycleFeature,
+		// A changed key and a changed CHECK or foreign key reach the planning
+		// service, which plans or refuses them by name.
+		provider.PrimaryKeyChangesFeature,
+		provider.ConstraintChangesFeature,
+		provider.CheckEquivalenceFeature,
+		// Every Ptah command plans in the exact statement style, the only one
+		// the provider writes.
+		provider.PlanningPolicyFeature,
+		provider.PlanningStatementStyleFeature,
+		// The host takes a lock before it applies a plan, and runs a plan in
+		// a transaction; see locks.go and transactions.go.
+		provider.LocksFeature,
+		provider.TransactionsFeature,
 		// A read reports each column whole, the primary key in key order,
 		// the CHECKs and foreign keys, and the indexes a table holds.
 		provider.ObservedColumnsFeature,
 		provider.ObservedPrimaryKeysFeature,
 		provider.ObservedConstraintsFeature,
 		provider.ObservedIndexesFeature,
-		// The SDK pairs the observations above with the normalization
-		// service; the provider declares no model for it.
+		// The provider normalizes its table operations.
 		provider.NormalizeValuesFeature,
 		// Views, sequences, comments and schemas travel on the common-object
 		// wire.
 		provider.CommonObjectsFeature,
 		provider.CommonNamespacesFeature,
+		// The release line names the DuckDB the executable links as its
+		// evidence; see identity.go.
+		provider.LinkedReleaseLinesFeature,
 	}
 }
 
@@ -110,6 +166,10 @@ func Description() *protocol.Description {
 			ReleaseLines:  releaseLines(),
 			Features:      providerFeatures(),
 			CommonObjects: &protocol.CommonObjectSupport{Kinds: commonObjectKinds()},
+			ValueModels:   append([]*protocol.ValueModel{tableop.Model()}, ownership.Models()...),
+			Planning: []*protocol.ModelPlanning{{
+				Id: tableplan.ServiceID, ParentKinds: []string{ownership.Kind}, OperationKinds: []string{tableop.Kind},
+			}},
 		}},
 	}
 }

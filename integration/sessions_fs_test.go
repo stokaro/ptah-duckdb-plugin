@@ -40,7 +40,11 @@ func TestOpen_FileSession(t *testing.T) {
 	c.Assert(first.GetId(), qt.Not(qt.Equals), "")
 	// No host feature is negotiated here, so every two-way feature is left
 	// out of the session's features.
-	c.Assert(first.GetFeatures(), qt.DeepEquals, []string{provider.InspectFeature, provider.NormalizeValuesFeature})
+	c.Assert(first.GetFeatures(), qt.DeepEquals, []string{
+		provider.InspectFeature, provider.RenderFeature, provider.ExecuteFeature, provider.AnalyzeSQLFeature, provider.ValidateSchemaFeature,
+		provider.PrepareTablesFeature, provider.ProjectTableCreationsFeature, provider.PlanFeaturesFeature, provider.CheckEquivalenceFeature,
+		provider.LocksFeature, provider.TransactionsFeature, provider.NormalizeValuesFeature,
+	})
 
 	second := openSession(c, p, fileAddress(path))
 	c.Assert(second.GetId(), qt.Not(qt.Equals), first.GetId())
