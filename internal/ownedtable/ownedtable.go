@@ -103,7 +103,7 @@ func (d Definition) Statements(create string) []string {
 // else. A read calls it to leave the provider's tables out of the schema it
 // reports.
 func (d Definition) Holds(table catalog.Table) bool {
-	if table.Comment != d.Mark || len(table.Checks) != 0 || len(table.ForeignKeys) != 0 || len(table.Indexes) != 0 ||
+	if table.Comment != d.Mark || len(table.Uniques) != 0 || len(table.Checks) != 0 || len(table.ForeignKeys) != 0 || len(table.Indexes) != 0 ||
 		table.PrimaryKey == nil || !slices.Equal(table.PrimaryKey.Columns, d.PrimaryKey) || len(table.Columns) != len(d.Columns) {
 		return false
 	}

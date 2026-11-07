@@ -69,7 +69,7 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 	}
 	for _, read := range reads {
 		for _, table := range read.Tables {
-			snapshot.Tables = append(snapshot.Tables, observedTable(current.database, read.Name, table))
+			snapshot.Tables = append(snapshot.Tables, observedTable(current.database, read.Name, table, engine.GetFeatures()))
 		}
 	}
 	if kinds := engine.GetCommonObjects().GetKinds(); len(kinds) > 0 {
@@ -167,7 +167,9 @@ func readSchemas(ctx context.Context, current *session, scope []string) ([]catal
 }
 
 // carried refuses a read that holds something the host did not negotiate a
-// way to receive. Leaving it out would read as its absence.
+// way to receive: a UNIQUE over several columns needs
+// schema.observed-unique-constraints, since a host without it receives a
+// UNIQUE only as a column's flag. Leaving it out would read as its absence.
 func carried(reads []catalog.Schema, features []string) error {
 	need := func(feature, what string) error {
 		if slices.Contains(features, feature) {
@@ -185,6 +187,9 @@ func carried(reads []catalog.Schema, features []string) error {
 				{table.PrimaryKey != nil, provider.ObservedPrimaryKeysFeature},
 				{len(table.Indexes) > 0, provider.ObservedIndexesFeature},
 				{len(table.Checks)+len(table.ForeignKeys) > 0, provider.ObservedConstraintsFeature},
+				// A UNIQUE over several columns has no column to state it
+				// on; one over a single column is also its column's flag.
+				{slices.ContainsFunc(table.Uniques, func(unique catalog.Key) bool { return len(unique.Columns) > 1 }), provider.ObservedUniqueConstraintsFeature},
 				{table.Comment != "" || slices.ContainsFunc(table.Columns, func(column catalog.Column) bool { return column.Comment != "" }) ||
 					slices.ContainsFunc(table.Indexes, func(index catalog.Index) bool { return index.Comment != "" }), provider.CommonObjectsFeature},
 			}
@@ -242,10 +247,13 @@ func foldASCII(name string) string {
 	}, name)
 }
 
-// observedTable is a read table as the protocol carries it: each column as
-// one complete observation, the primary key in key order, the CHECKs and
-// foreign keys, and the indexes.
-func observedTable(database, schema string, table catalog.Table) *protocol.Table {
+// observedTable is a read table as the protocol carries it under the
+// negotiated features: each column as one complete observation, the primary
+// key in key order, the UNIQUE constraints for a host that reads them
+// (schema.observed-unique-constraints), the CHECKs and foreign keys, and the
+// indexes.
+func observedTable(database, schema string, table catalog.Table, features []string) *protocol.Table {
+	uniques := slices.Contains(features, provider.ObservedUniqueConstraintsFeature)
 	result := &protocol.Table{Identity: reference(database, schema, "table", table.Name), NormalizedIdentity: normalizedReference(database, schema, "table", table.Name)}
 	var keys []string
 	if table.PrimaryKey != nil {
@@ -255,6 +263,12 @@ func observedTable(database, schema string, table catalog.Table) *protocol.Table
 	}
 	for i, column := range table.Columns {
 		result.Columns = append(result.Columns, &protocol.Column{Name: column.Name, Observed: observedColumn(column, i+1, slices.Contains(keys, column.Name))})
+	}
+	for _, unique := range table.Uniques {
+		if uniques {
+			result.Constraints = append(result.Constraints, &protocol.ObservedConstraint{Name: unique.Name, TableName: table.Name, Schema: schema,
+				Type: "UNIQUE", ColumnNames: slices.Clone(unique.Columns)})
+		}
 	}
 	for _, check := range table.Checks {
 		result.Constraints = append(result.Constraints, &protocol.ObservedConstraint{Name: check.Name, TableName: table.Name, Schema: schema,

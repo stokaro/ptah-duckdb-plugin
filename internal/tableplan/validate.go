@@ -34,7 +34,7 @@ func Validate(request *protocol.ValidateSchemaRequest, hold func(*protocol.Decla
 		if reason := SchemaRefusal("table", table.GetSchema(), table.GetName(), request.GetTargetFeatures()); reason != "" {
 			problems = append(problems, Problem{Code: protocol.SchemaDiagnostic_UNSUPPORTED_FEATURE, Kind: "table", Object: name, Message: reason})
 		}
-		for _, reason := range tableReasons(table) {
+		for _, reason := range tableReasons(table, request.GetTargetFeatures()) {
 			problems = append(problems, Problem{Code: protocol.SchemaDiagnostic_UNSUPPORTED_FEATURE, Kind: "table", Object: name, Message: reason})
 		}
 		if err := hold(table); err != nil {
@@ -67,7 +67,7 @@ func qualifiedName(table *protocol.DeclaredTable) string {
 
 // tableReasons lists why the provider cannot create a declared table on
 // DuckDB, each a sentence that names the table and what it declares.
-func tableReasons(table *protocol.DeclaredTable) []string {
+func tableReasons(table *protocol.DeclaredTable, features []string) []string {
 	name := fmt.Sprintf("table %q", qualifiedName(table))
 	var reasons []string
 	add := func(format string, args ...any) { reasons = append(reasons, name+" "+fmt.Sprintf(format, args...)) }
@@ -91,7 +91,7 @@ func tableReasons(table *protocol.DeclaredTable) []string {
 		reasons = append(reasons, columnReasons(name, column)...)
 	}
 	for _, constraint := range table.GetConstraints() {
-		reasons = append(reasons, constraintReasons(name, table, constraint)...)
+		reasons = append(reasons, constraintReasons(name, constraint, features)...)
 	}
 	for _, index := range table.GetIndexes() {
 		if reason := IndexRefusal(index); reason != "" {
@@ -138,7 +138,7 @@ func columnReasons(table string, column *protocol.DeclaredColumn) []string {
 
 // constraintReasons lists why the provider cannot create a declared table
 // constraint.
-func constraintReasons(table string, declared *protocol.DeclaredTable, constraint *protocol.DeclaredConstraint) []string {
+func constraintReasons(table string, constraint *protocol.DeclaredConstraint, features []string) []string {
 	where := fmt.Sprintf("%s constraint %q", table, constraint.GetName())
 	var reasons []string
 	if constraint.GetNotEnforced() || constraint.GetNotValid() {
@@ -146,8 +146,12 @@ func constraintReasons(table string, declared *protocol.DeclaredTable, constrain
 	}
 	switch strings.ToUpper(strings.TrimSpace(constraint.GetType())) {
 	case "UNIQUE":
-		if len(constraint.GetColumns()) != 1 {
-			reasons = append(reasons, where+" is a UNIQUE over several columns, which the provider cannot read back yet; declare a unique index instead")
+		switch {
+		case len(constraint.GetColumns()) == 0:
+			reasons = append(reasons, where+" is a UNIQUE over no column")
+		case len(constraint.GetColumns()) > 1 && !slices.Contains(features, provider.ObservedUniqueConstraintsFeature):
+			reasons = append(reasons, where+" is a UNIQUE over several columns, which a read reports only to a host that reads "+
+				provider.ObservedUniqueConstraintsFeature+"; declare a unique index instead")
 		}
 		if constraint.NullsDistinct != nil || len(constraint.GetIncludeColumns()) > 0 || strings.TrimSpace(constraint.GetUsingMethod()) != "" {
 			reasons = append(reasons, where+" declares NULLS DISTINCT, INCLUDE or a method, which a DuckDB UNIQUE has none of")
@@ -162,7 +166,6 @@ func constraintReasons(table string, declared *protocol.DeclaredTable, constrain
 	default:
 		reasons = append(reasons, fmt.Sprintf("%s has the %s constraint %q, which DuckDB does not have", table, constraint.GetType(), constraint.GetName()))
 	}
-	_ = declared
 	return reasons
 }
 

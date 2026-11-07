@@ -36,7 +36,7 @@ const Kind = ProviderID + "/table-operation"
 const Engine = "duckdb"
 
 const (
-	schemaVersion   = 1
+	schemaVersion   = 2
 	encoding        = "json"
 	canonicalFormat = Kind + "/json-v1"
 )
@@ -69,24 +69,26 @@ const (
 // the fields its comment names and refuses any other.
 type Operation struct {
 	Action Action `json:"action"`
-	// Columns, PrimaryKey, Checks and ForeignKeys are the table a
+	// Columns, PrimaryKey, Uniques, Checks and ForeignKeys are the table a
 	// create-table makes, the key in key order. DuckDB adds no CHECK and no
 	// foreign key to a table that exists, so a create-table writes them.
 	Columns     []Column     `json:"columns,omitempty"`
 	PrimaryKey  []string     `json:"primaryKey,omitempty"`
+	Uniques     [][]string   `json:"uniques,omitempty"`
 	Checks      []string     `json:"checks,omitempty"`
 	ForeignKeys []ForeignKey `json:"foreignKeys,omitempty"`
 	// Column is the column an add-column adds.
 	Column *Column `json:"column,omitempty"`
 	// Name is the column a drop-column, alter-column-type, set-default,
-	// drop-default, set-not-null, drop-not-null or add-unique names, or the
-	// index a drop-index drops.
+	// drop-default, set-not-null or drop-not-null names, or the index a
+	// drop-index drops.
 	Name string `json:"name,omitempty"`
 	// Type is the type an alter-column-type gives the column.
 	Type string `json:"type,omitempty"`
 	// Default is the SQL that follows DEFAULT in a set-default.
 	Default string `json:"default,omitempty"`
-	// Key is the key an add-primary-key adds, in key order.
+	// Key is the key an add-primary-key adds, in key order, or the columns
+	// of the UNIQUE an add-unique adds.
 	Key []string `json:"key,omitempty"`
 	// Index is the index a create-index makes.
 	Index *Index `json:"index,omitempty"`
@@ -144,13 +146,14 @@ func buildModel() *protocol.ValueModel {
 			"columns": "create-table: every column in order, each with name, type as DuckDB reads it, nullable, and an optional collation, " +
 				"default, VIRTUAL generated expression, UNIQUE and CHECK",
 			"primaryKey":  "create-table: the key columns in key order",
+			"uniques":     "create-table: each UNIQUE constraint over several columns, its columns in order; one over a single column is its column's unique",
 			"checks":      "create-table: the table's CHECK conditions",
 			"foreignKeys": "create-table: each foreign key's columns, the referenced table in the same schema and its columns",
 			"column":      "add-column: one column without UNIQUE, CHECK or generated expression",
-			"name":        "the column an alter, drop-column, drop-default or add-unique names, or the index a drop-index drops",
+			"name":        "the column an alter, drop-column or drop-default names, or the index a drop-index drops",
 			"type":        "alter-column-type: the type as DuckDB reads it",
 			"default":     "set-default: the SQL that follows DEFAULT",
-			"key":         "add-primary-key: the key columns in key order",
+			"key":         "add-primary-key and add-unique: the columns in order",
 			"index":       "create-index: name, unique and key parts, each a column or an expression",
 			"tables":      "drop-tables: two or more distinct tables of the owner's schema in the order they are dropped, the owner first",
 		},
@@ -261,7 +264,7 @@ func (o Operation) SQL(schema, table string) (string, error) { return o.statemen
 
 // fields lists the operands an action reads.
 var fields = map[Action][]string{
-	CreateTable:     {"columns", "primaryKey", "checks", "foreignKeys"},
+	CreateTable:     {"columns", "primaryKey", "uniques", "checks", "foreignKeys"},
 	DropTable:       {},
 	AddColumn:       {"column"},
 	DropColumn:      {"name"},
@@ -271,7 +274,7 @@ var fields = map[Action][]string{
 	SetNotNull:      {"name"},
 	DropNotNull:     {"name"},
 	AddPrimaryKey:   {"key"},
-	AddUnique:       {"name"},
+	AddUnique:       {"key"},
 	CreateIndex:     {"index"},
 	DropIndex:       {"name"},
 	DropTables:      {"tables"},
@@ -281,9 +284,9 @@ var fields = map[Action][]string{
 func (o Operation) present() []string {
 	var names []string
 	for name, set := range map[string]bool{
-		"columns": len(o.Columns) != 0, "primaryKey": len(o.PrimaryKey) != 0, "checks": len(o.Checks) != 0, "foreignKeys": len(o.ForeignKeys) != 0,
-		"column": o.Column != nil, "name": o.Name != "", "type": o.Type != "", "default": o.Default != "", "key": len(o.Key) != 0,
-		"index": o.Index != nil, "tables": len(o.Tables) != 0,
+		"columns": len(o.Columns) != 0, "primaryKey": len(o.PrimaryKey) != 0, "uniques": len(o.Uniques) != 0, "checks": len(o.Checks) != 0,
+		"foreignKeys": len(o.ForeignKeys) != 0, "column": o.Column != nil, "name": o.Name != "", "type": o.Type != "", "default": o.Default != "",
+		"key": len(o.Key) != 0, "index": o.Index != nil, "tables": len(o.Tables) != 0,
 	} {
 		if set {
 			names = append(names, name)
@@ -307,7 +310,7 @@ func (o Operation) statement(schema, table string) (string, error) {
 	}
 	switch o.Action {
 	case CreateTable:
-		definition := ddl.Table{PrimaryKey: o.PrimaryKey, Checks: o.Checks}
+		definition := ddl.Table{PrimaryKey: o.PrimaryKey, Uniques: o.Uniques, Checks: o.Checks}
 		for _, column := range o.Columns {
 			definition.Columns = append(definition.Columns, column.ddl())
 		}
@@ -326,6 +329,8 @@ func (o Operation) statement(schema, table string) (string, error) {
 		return ddl.AddColumn(schema, table, o.Column.ddl())
 	case AddPrimaryKey:
 		return ddl.AddPrimaryKey(schema, table, o.Key)
+	case AddUnique:
+		return ddl.AddUnique(schema, table, o.Key)
 	case CreateIndex:
 		if o.Index == nil {
 			return "", fmt.Errorf("a create-index operation names no index")
@@ -358,8 +363,6 @@ func (o Operation) namedStatement(schema, table string) (string, error) {
 		return ddl.SetNotNull(schema, table, o.Name), nil
 	case DropNotNull:
 		return ddl.DropNotNull(schema, table, o.Name), nil
-	case AddUnique:
-		return ddl.AddUnique(schema, table, o.Name), nil
 	default:
 		return ddl.DropIndex(schema, o.Name), nil
 	}
@@ -381,7 +384,7 @@ func (o Operation) impact() (protocol.ChangeSemantics_Impact, string) {
 	case AddPrimaryKey:
 		return protocol.ChangeSemantics_BEHAVIORAL, "Adds a primary key; DuckDB refuses it while two rows share a key or a key holds NULL"
 	case AddUnique:
-		return protocol.ChangeSemantics_BEHAVIORAL, "Makes a column UNIQUE; DuckDB refuses it while two rows share a value"
+		return protocol.ChangeSemantics_BEHAVIORAL, "Adds a UNIQUE constraint; DuckDB refuses it while two rows share its values"
 	case CreateIndex:
 		if o.Index != nil && o.Index.Unique {
 			return protocol.ChangeSemantics_BEHAVIORAL, "Creates a unique index; DuckDB refuses it while two rows share a key"

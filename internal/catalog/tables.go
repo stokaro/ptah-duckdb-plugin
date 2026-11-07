@@ -163,8 +163,12 @@ func placeConstraint(table *Table, kind, name string, columns []string, expressi
 	case "PRIMARY KEY":
 		table.PrimaryKey = &Key{Name: name, Columns: columns}
 	case "UNIQUE":
-		if len(columns) != 1 {
-			return unsupported("table %q has the UNIQUE constraint %q over %d columns, which the provider does not read yet", table.Name, name, len(columns))
+		if len(columns) == 0 {
+			return unsupported("UNIQUE constraint %q of table %q reports no columns", name, table.Name)
+		}
+		table.Uniques = append(table.Uniques, Key{Name: name, Columns: columns})
+		if len(columns) > 1 {
+			break
 		}
 		at := slices.IndexFunc(table.Columns, func(column Column) bool { return column.Name == columns[0] })
 		if at < 0 || table.Columns[at].Unique {

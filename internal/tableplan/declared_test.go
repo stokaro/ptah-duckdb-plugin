@@ -211,7 +211,7 @@ func TestValidate(t *testing.T) {
 		{Code: protocol.SchemaDiagnostic_UNSUPPORTED_FEATURE, Kind: "table", Object: "app.bad",
 			Message: `table "app.bad" column "r" has a foreign key that has ON DELETE CASCADE; DuckDB has NO ACTION and RESTRICT only`},
 		{Code: protocol.SchemaDiagnostic_UNSUPPORTED_FEATURE, Kind: "table", Object: "app.bad",
-			Message: `table "app.bad" constraint "u2" is a UNIQUE over several columns, which the provider cannot read back yet; declare a unique index instead`},
+			Message: `table "app.bad" constraint "u2" is a UNIQUE over several columns, which a read reports only to a host that reads schema.observed-unique-constraints; declare a unique index instead`},
 		{Code: protocol.SchemaDiagnostic_UNSUPPORTED_FEATURE, Kind: "table", Object: "app.bad",
 			Message: `table "app.bad" constraint "ex" is an EXCLUDE constraint; DuckDB has none`},
 		{Code: protocol.SchemaDiagnostic_UNSUPPORTED_FEATURE, Kind: "table", Object: "app.bad",
@@ -219,4 +219,16 @@ func TestValidate(t *testing.T) {
 		{Code: protocol.SchemaDiagnostic_INVALID_SCHEMA, Kind: "table", Object: "refused",
 			Message: `DuckDB refuses column "a" with the type NOPE, its collation or its default`},
 	})
+}
+
+// A host that reads UNIQUE constraints takes one over several columns back
+// from a read, so the declaration is one the provider creates.
+func TestValidate_AUniqueOverSeveralColumns(t *testing.T) {
+	c := testcheck.New(t)
+	request := &protocol.ValidateSchemaRequest{TargetFeatures: []string{provider.ObservedUniqueConstraintsFeature}, Tables: []*protocol.ValidationTable{
+		{Declaration: &protocol.DeclaredTable{Name: "m", Columns: []*protocol.DeclaredColumn{{Name: "a", Type: "INTEGER"}, {Name: "b", Type: "INTEGER"}},
+			Constraints: []*protocol.DeclaredConstraint{{Name: "m_ab", Type: "UNIQUE", Columns: []string{"a", "b"}}}}},
+	}}
+	c.Assert(tableplan.Validate(request, func(*protocol.DeclaredTable) error { return nil }), qt.IsNil)
+	c.Assert(tableplan.UniqueConstraints(request.GetTables()[0].GetDeclaration()), qt.DeepEquals, [][]string{{"a", "b"}})
 }

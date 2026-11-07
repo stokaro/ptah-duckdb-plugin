@@ -24,7 +24,7 @@ func TestBuildProvider_HappyPath(t *testing.T) {
 	c.Assert(got.Schema, qt.Equals, 1)
 	c.Assert(got.ProviderID, qt.Equals, "github.com/stokaro/ptah-duckdb-plugin")
 	c.Assert(got.Version, qt.Equals, "0.2.0")
-	c.Assert(got.MinContract, qt.Equals, releasemanifest.ContractVersion{Major: provider.Revision, Minor: 30})
+	c.Assert(got.MinContract, qt.Equals, releasemanifest.ContractVersion{Major: provider.Revision, Minor: 32})
 	c.Assert(got.Engines, qt.DeepEquals, []string{"duckdb"})
 	c.Assert(got.Artifacts, qt.DeepEquals, []releasemanifest.Artifact{
 		{OS: "darwin", Arch: "amd64", Archive: "ptah-plugin-duckdb_0.2.0_darwin_amd64.tar.gz", Executable: "ptah-plugin-duckdb"},

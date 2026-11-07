@@ -60,7 +60,11 @@ type Table struct {
 	Comment string
 	Columns []Column
 	// PrimaryKey is nil for a table without one; its columns are in key order.
-	PrimaryKey  *Key
+	PrimaryKey *Key
+	// Uniques are the table's UNIQUE constraints, over one column or
+	// several, in the order DuckDB lists them. A column a UNIQUE over it
+	// alone covers also states Unique.
+	Uniques     []Key
 	Checks      []Check
 	ForeignKeys []ForeignKey
 	Indexes     []Index

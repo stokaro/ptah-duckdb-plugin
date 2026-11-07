@@ -11,8 +11,8 @@ import (
 	"github.com/stokaro/ptah-duckdb-plugin/internal/tableop"
 )
 
-// NormalizeValues normalizes the table operations the provider planned. The
-// lifecycle model declares no value, so every other value is refused.
+// NormalizeValues normalizes the table operations the provider planned, the
+// only values it declares; every other value is refused.
 func (*Provider) NormalizeValues(ctx context.Context, request *protocol.NormalizeValuesRequest) (*protocol.NormalizedValues, error) {
 	result := &protocol.NormalizedValues{Complete: true}
 	for _, input := range request.GetValues() {
@@ -20,7 +20,7 @@ func (*Provider) NormalizeValues(ctx context.Context, request *protocol.Normaliz
 			return nil, status.FromContextError(err).Err()
 		}
 		if input.GetValue().GetKind() != tableop.Kind {
-			return nil, providerruntime.ErrorWithReason(codes.InvalidArgument, "the provider normalizes its table operations only; its table model has no value")
+			return nil, providerruntime.ErrorWithReason(codes.InvalidArgument, "the provider normalizes its table operations only")
 		}
 		normalized, err := tableop.Normalize(input)
 		if err != nil {

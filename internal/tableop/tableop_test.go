@@ -30,8 +30,9 @@ func TestCapture_HappyPath(t *testing.T) {
 		impact    protocol.ChangeSemantics_Impact
 	}{
 		{"create table", tableop.Operation{Action: tableop.CreateTable, Columns: []tableop.Column{{Name: "id", Type: "INTEGER"}, {Name: "p", Type: "INTEGER", Nullable: true}},
-			PrimaryKey: []string{"id"}, Checks: []string{"id > 0"}, ForeignKeys: []tableop.ForeignKey{{Columns: []string{"p"}, RefTable: "q", RefColumns: []string{"id"}}}},
-			"CREATE TABLE \"main\".\"t\" (\n  \"id\" INTEGER NOT NULL,\n  \"p\" INTEGER,\n  PRIMARY KEY (\"id\"),\n  CHECK (id > 0),\n" +
+			PrimaryKey: []string{"id"}, Uniques: [][]string{{"id", "p"}}, Checks: []string{"id > 0"},
+			ForeignKeys: []tableop.ForeignKey{{Columns: []string{"p"}, RefTable: "q", RefColumns: []string{"id"}}}},
+			"CREATE TABLE \"main\".\"t\" (\n  \"id\" INTEGER NOT NULL,\n  \"p\" INTEGER,\n  PRIMARY KEY (\"id\"),\n  UNIQUE (\"id\", \"p\"),\n  CHECK (id > 0),\n" +
 				"  FOREIGN KEY (\"p\") REFERENCES \"main\".\"q\" (\"id\")\n)", protocol.ChangeSemantics_ADDITIVE},
 		{"drop table", tableop.Operation{Action: tableop.DropTable}, `DROP TABLE "main"."t"`, protocol.ChangeSemantics_DESTRUCTIVE},
 		{"add column", tableop.Operation{Action: tableop.AddColumn, Column: &tableop.Column{Name: "c", Type: "VARCHAR", Nullable: true}},
@@ -51,7 +52,9 @@ func TestCapture_HappyPath(t *testing.T) {
 			protocol.ChangeSemantics_ADDITIVE},
 		{"add a primary key", tableop.Operation{Action: tableop.AddPrimaryKey, Key: []string{"a", "b"}}, `ALTER TABLE "main"."t" ADD PRIMARY KEY ("a", "b")`,
 			protocol.ChangeSemantics_BEHAVIORAL},
-		{"add unique", tableop.Operation{Action: tableop.AddUnique, Name: "c"}, `ALTER TABLE "main"."t" ADD UNIQUE ("c")`, protocol.ChangeSemantics_BEHAVIORAL},
+		{"add unique", tableop.Operation{Action: tableop.AddUnique, Key: []string{"c"}}, `ALTER TABLE "main"."t" ADD UNIQUE ("c")`, protocol.ChangeSemantics_BEHAVIORAL},
+		{"add a unique over two columns", tableop.Operation{Action: tableop.AddUnique, Key: []string{"a", "b"}}, `ALTER TABLE "main"."t" ADD UNIQUE ("a", "b")`,
+			protocol.ChangeSemantics_BEHAVIORAL},
 		{"create an index", tableop.Operation{Action: tableop.CreateIndex, Index: &tableop.Index{Name: "i", Parts: []tableop.IndexPart{{Column: "c"}}}},
 			`CREATE INDEX "i" ON "main"."t" ("c")`, protocol.ChangeSemantics_ADDITIVE},
 		{"create a unique index", tableop.Operation{Action: tableop.CreateIndex, Index: &tableop.Index{Name: "i", Unique: true,
@@ -86,6 +89,7 @@ func TestCapture_FailurePath(t *testing.T) {
 		{"an operand the action does not take", tableop.Owner("main", "t"), tableop.Operation{Action: tableop.DropTable, Name: "x"},
 			"a drop-table operation does not take name"},
 		{"a missing operand", tableop.Owner("main", "t"), tableop.Operation{Action: tableop.DropColumn}, "a drop-column operation names nothing"},
+		{"a unique over no column", tableop.Owner("main", "t"), tableop.Operation{Action: tableop.AddUnique}, "an operand the statement cannot carry: a UNIQUE needs a column"},
 		{"a column the statement cannot add", tableop.Owner("main", "t"),
 			tableop.Operation{Action: tableop.AddColumn, Column: &tableop.Column{Name: "c", Type: "INTEGER", Unique: true}},
 			"an operand the statement cannot carry: DuckDB adds no column with a UNIQUE, a CHECK or a generated expression"},

@@ -1,13 +1,15 @@
 // Package tableplan plans the tables of the duckdb engine: their creation,
 // the changes of a table the plan keeps, and their removal. It is the
-// provider's table lifecycle service, which the host hands every table it
-// creates, changes or drops, with the host's placeholder steps for each.
+// planning service that owns the engine's tables (planning.table-ownership),
+// which the host hands every table it creates, changes or drops, with the
+// host's placeholder steps for each.
 //
 // Each statement is a step of its own with a tableop operation. A step
 // replaces the host placeholder it stands for, or joins the plan beside them,
 // ordered by explicit dependencies: a table after the tables its foreign keys
-// reference, an index after its table, and a column change after the index
-// removals of its table and before its index additions. Tables the plan
+// reference, an index after its table, a column change after the index
+// removals of its table and before its index additions, and a key or a
+// UNIQUE after the steps that add or change its columns. Tables the plan
 // drops whose foreign keys reference one another are dropped by one step,
 // each after the tables that reference it.
 //
@@ -33,7 +35,8 @@
 //     drops no UNIQUE, and changes and drops no primary key.
 //
 // DuckDB keeps no constraint names, so the planner compares a kept table's
-// CHECKs and foreign keys by what they say, never by name.
+// CHECKs and foreign keys by what they say and its UNIQUEs by their columns
+// in order, never by name.
 package tableplan
 
 import (
@@ -44,6 +47,7 @@ import (
 	"strings"
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/tableop"
@@ -148,7 +152,9 @@ func Plan(ctx context.Context, request *protocol.PlanFeaturesRequest, declared D
 		if table.GetAction() == protocol.PlanningTable_CONTEXT {
 			continue
 		}
-		for _, kind := range request.GetParentKinds() {
+		// The service owns the engine's tables (planning.table-ownership),
+		// so the table receipt follows the receipts of any parent kind.
+		for _, kind := range append(slices.Clone(request.GetParentKinds()), provider.TableReceiptKind) {
 			p.result.Parents = append(p.result.Parents, &protocol.PlanningParentReceipt{Action: table.GetAction(), Receipt: &protocol.PlanningReceipt{
 				Subject: proto.CloneOf(table.GetSubject()), Kind: kind, Strategy: strategy(table.GetAction()), Steps: cloneSteps(p.receipts[i]),
 			}})
@@ -166,7 +172,7 @@ func refused(err error) (*protocol.PlannedFeatures, error) {
 		return nil, err
 	}
 	return &protocol.PlannedFeatures{Complete: true, Diagnostics: []*protocol.PlanningDiagnostic{{
-		Code: declined.code, Kind: OwnershipKind, Message: declined.message,
+		Code: declined.code, Kind: provider.TableReceiptKind, Message: declined.message,
 		Input: &protocol.PlanningDiagnostic_Parent{Parent: uint32(declined.table)}, // #nosec G115 -- a request holds far fewer tables than math.MaxUint32
 	}}}, nil
 }
@@ -207,6 +213,10 @@ func (p *planner) create(index int, table *protocol.PlanningTable) error {
 	}
 	if reason := SchemaRefusal("table", subject.GetSchema().GetSource(), subject.GetName().GetSource(), p.request.GetTargetFeatures()); reason != "" {
 		return unsupported(index, "%s", reason)
+	}
+	if len(UniqueConstraints(desired)) > 0 && !slices.Contains(p.request.GetTargetFeatures(), provider.ObservedUniqueConstraintsFeature) {
+		return unsupported(index, "table %s declares a UNIQUE over several columns, which a read reports only to a host that reads %s",
+			phrase(subject), provider.ObservedUniqueConstraintsFeature)
 	}
 	held, err := p.declared.Hold(desired)
 	if err != nil {

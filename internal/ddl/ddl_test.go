@@ -19,6 +19,7 @@ func TestCreateTable_HappyPath(t *testing.T) {
 			{Name: "parent", Type: "INTEGER", Nullable: true},
 		},
 		PrimaryKey:  []string{"id"},
+		Uniques:     [][]string{{"name", "parent"}},
 		Checks:      []string{" id > 0 "},
 		ForeignKeys: []ddl.ForeignKey{{Columns: []string{"parent"}, RefTable: "parents", RefColumns: []string{"id"}}},
 	})
@@ -29,6 +30,7 @@ func TestCreateTable_HappyPath(t *testing.T) {
   "twice" INTEGER GENERATED ALWAYS AS (id * 2) VIRTUAL,
   "parent" INTEGER,
   PRIMARY KEY ("id"),
+  UNIQUE ("name", "parent"),
   CHECK (id > 0),
   FOREIGN KEY ("parent") REFERENCES "main"."parents" ("id")
 )`)
@@ -70,7 +72,6 @@ func TestAlterStatements(t *testing.T) {
 		{"drop default", ddl.DropDefault("s", "t", "c"), `ALTER TABLE "s"."t" ALTER COLUMN "c" DROP DEFAULT`},
 		{"set not null", ddl.SetNotNull("s", "t", "c"), `ALTER TABLE "s"."t" ALTER COLUMN "c" SET NOT NULL`},
 		{"drop not null", ddl.DropNotNull("s", "t", "c"), `ALTER TABLE "s"."t" ALTER COLUMN "c" DROP NOT NULL`},
-		{"add unique", ddl.AddUnique("s", "t", "c"), `ALTER TABLE "s"."t" ADD UNIQUE ("c")`},
 		{"drop index", ddl.DropIndex("s", "i"), `DROP INDEX "s"."i"`},
 		{"create schema", ddl.CreateSchema(`a"b`), `CREATE SCHEMA "a""b"`},
 		{"drop schema", ddl.DropSchema("a"), `DROP SCHEMA "a"`},
@@ -99,6 +100,7 @@ func TestOperandStatements_HappyPath(t *testing.T) {
 		{"type", func() (string, error) { return ddl.AlterColumnType("s", "t", "c", " BIGINT ") }, `ALTER TABLE "s"."t" ALTER COLUMN "c" TYPE BIGINT`},
 		{"set default", func() (string, error) { return ddl.SetDefault("s", "t", "c", "now()") }, `ALTER TABLE "s"."t" ALTER COLUMN "c" SET DEFAULT now()`},
 		{"add primary key", func() (string, error) { return ddl.AddPrimaryKey("s", "t", []string{"a", "b"}) }, `ALTER TABLE "s"."t" ADD PRIMARY KEY ("a", "b")`},
+		{"add unique", func() (string, error) { return ddl.AddUnique("s", "t", []string{"a", "b"}) }, `ALTER TABLE "s"."t" ADD UNIQUE ("a", "b")`},
 		{"create index", func() (string, error) {
 			return ddl.CreateIndex("s", "t", ddl.Index{Name: "i", Unique: true, Parts: []ddl.IndexPart{{Column: "a"}, {Expression: "lower(b)"}}})
 		}, `CREATE UNIQUE INDEX "i" ON "s"."t" ("a", (lower(b)))`},
@@ -137,6 +139,7 @@ func TestOperandStatements_FailurePath(t *testing.T) {
 		{"no type", func() (string, error) { return ddl.AlterColumnType("s", "t", "c", " ") }},
 		{"no default", func() (string, error) { return ddl.SetDefault("s", "t", "c", "") }},
 		{"no key", func() (string, error) { return ddl.AddPrimaryKey("s", "t", nil) }},
+		{"a unique over no column", func() (string, error) { return ddl.AddUnique("s", "t", nil) }},
 		{"an index without a name", func() (string, error) {
 			return ddl.CreateIndex("s", "t", ddl.Index{Parts: []ddl.IndexPart{{Column: "a"}}})
 		}},

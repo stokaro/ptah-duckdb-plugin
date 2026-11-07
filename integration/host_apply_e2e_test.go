@@ -173,6 +173,25 @@ func TestHostAltersATableInPlace(t *testing.T) {
 	}
 }
 
+// A primary key added to a table that exists runs after the change that
+// makes its columns NOT NULL, and DuckDB holds it.
+func TestHostAddsAPrimaryKeyToATable(t *testing.T) {
+	c := testcheck.New(t)
+	path := seedFile(c, "key.duckdb", []string{"CREATE TABLE p (a INTEGER NOT NULL, b INTEGER)", "INSERT INTO p VALUES (1, 1), (1, 2)"})
+	const schema = "CREATE TABLE p (a INTEGER, b INTEGER, PRIMARY KEY (a, b));"
+
+	output, err := planSchema(c, path, schema)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Equals, planned(`ALTER TABLE "main"."p" ALTER COLUMN "b" SET NOT NULL;`, `ALTER TABLE "main"."p" ADD PRIMARY KEY ("a", "b");`))
+	output, err = applySchema(c, path, schema)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	output, err = planSchema(c, path, schema)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(output, qt.Equals, synced)
+	c.Assert(rows(c, path, "SELECT constraint_text FROM duckdb_constraints() WHERE table_name = 'p' AND constraint_type = 'PRIMARY KEY'"),
+		qt.DeepEquals, []string{"PRIMARY KEY(a, b)"})
+}
+
 // DuckDB drops no table a foreign key references, so the plan drops the
 // referencing table first.
 func TestHostDropsATableAfterTheTableThatReferencesIt(t *testing.T) {

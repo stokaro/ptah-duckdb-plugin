@@ -142,9 +142,9 @@ What a read carries:
 | --- | --- |
 | Schema | A namespace on the common-object wire (`schema.common-namespaces`), `main` included. A selector names a schema without regard to ASCII case; one that names no schema selects nothing. |
 | Table | Name and comment; temporary tables belong to a connection and are left out. |
-| Column | DuckDB's own type spelling, nullability, default expression as DuckDB stores it (`nextval('seq_id')`, `list_value(1, 2)`), the expression of a generated column (DuckDB's are all `VIRTUAL`), comment. A `DECIMAL` also states its precision and scale. |
+| Column | DuckDB's own type spelling (an enum column's type lists its values, `ENUM('a', 'b')`), nullability, default expression as DuckDB stores it (`nextval('seq_id')`, `list_value(1, 2)`), the expression of a generated column (DuckDB's are all `VIRTUAL`), comment. A `DECIMAL` also states its precision and scale. |
 | Primary key | DuckDB's name for it and its columns in key order. |
-| `UNIQUE` on one column | The column's `unique` flag. |
+| `UNIQUE` | DuckDB's name for it and its columns in order (`schema.observed-unique-constraints`). One over a single column also sets the column's `unique` flag, which is all a host that does not read UNIQUE constraints receives. |
 | `CHECK` | DuckDB's name for it, the columns it reads and the expression as DuckDB keeps it, `(id > 0)`. |
 | `FOREIGN KEY` | DuckDB's name, the columns, the referenced table and columns, and `NO ACTION` as both rules. |
 | Index | Name, uniqueness, comment and key parts in order: a column, or an expression as DuckDB writes it. |
@@ -181,7 +181,6 @@ What a read refuses, by name:
   (`schema.common-namespaces`): such a host could not tell it from a schema
   the database does not have. A read that selects `main` reads it alone;
 - a macro or a type made with `CREATE TYPE`, which the provider does not model;
-- a `UNIQUE` constraint over more than one column (see the contract gaps);
 - two constraints of one table under one name, such as two `CHECK`s over the
   same column: without names a read cannot tell them apart;
 - a view that names its columns (`CREATE VIEW v (a, b) AS ...`) and a comment
@@ -189,7 +188,8 @@ What a read refuses, by name:
 - an index with a method other than DuckDB's own ART index;
 - anything the host did not negotiate a way to receive: a table needs
   `schema.observed-columns`, a primary key `schema.observed-primary-keys`, a
-  `CHECK` or foreign key `schema.observed-constraints`, an index
+  `CHECK` or foreign key `schema.observed-constraints`, a `UNIQUE` over
+  several columns `schema.observed-unique-constraints`, an index
   `schema.observed-indexes`, and a view, sequence or comment
   `schema.common-objects`.
 
@@ -206,22 +206,28 @@ asks the provider to plan, render and run the changes. `ptah migrations lint`
 splits migration files with the provider's SQL analysis. Versioned migrations
 are described under [Migrations](#migrations).
 
-The provider needs a host of contract 25.30 or later, which states that the
-host starts the provider in its own working directory, so a relative address
-names the same file for both.
+The provider needs a host of contract 25.32 or later that lists
+`planning.table-ownership`. Table ownership is the provider's only claim on
+DuckDB's tables: without it Ptah would hand the provider no table to plan, so
+a host that does not list it is refused when it starts the provider. The
+contract also states that the host starts the provider in its own working
+directory, so a relative address names the same file for both.
 
 ### What the provider plans
 
-The provider owns the lifecycle of DuckDB's tables. Ptah hands it every table
-a plan creates, changes or drops, and the provider plans each statement:
+The provider's planning service owns DuckDB's tables
+(`planning.table-ownership`). Ptah hands it every table a plan creates,
+changes or drops, and the provider plans each statement:
 
-- `CREATE TABLE` with the columns, primary key, single-column `UNIQUE`,
-  `CHECK`s and foreign keys, since DuckDB adds no `CHECK` and no foreign key to
+- `CREATE TABLE` with the columns, primary key, `UNIQUE` constraints over one
+  or several columns, `CHECK`s and foreign keys, since DuckDB adds no `CHECK` and no foreign key to
   a table that exists; then `CREATE INDEX` for each index.
 - On a table that exists: `ADD COLUMN`, `DROP COLUMN`, a column's type
   (`ALTER COLUMN ... TYPE`), default (`SET DEFAULT`, `DROP DEFAULT`) and
-  nullability (`SET NOT NULL`, `DROP NOT NULL`), `ADD UNIQUE` for one column,
-  `ADD PRIMARY KEY` on a table without one, `CREATE INDEX` and `DROP INDEX`.
+  nullability (`SET NOT NULL`, `DROP NOT NULL`), `ADD UNIQUE` over one or
+  several columns, `ADD PRIMARY KEY` on a table without one, `CREATE INDEX`
+  and `DROP INDEX`. A key or a `UNIQUE` runs after the statements that add
+  its columns or make them `NOT NULL`.
 - `DROP TABLE`, which drops the table's indexes. Tables of one schema that
   reference one another are dropped in one unit, each after the tables that
   reference it.
@@ -250,13 +256,26 @@ plan says so, instead of failing or planning the same change on every run:
   `DUCKDB: column "email" of table "users" is declared VARCHAR(255); DuckDB
   keeps no length and holds it as VARCHAR, which takes text of any length.`
   The note is printed with the plan and written into a generated migration.
-- **Constraint names.** DuckDB names every constraint itself. The plan
-  compares `CHECK`s and foreign keys by what they say, never by name, and the
-  creation carries a note that lists the declared names DuckDB will not keep.
+- **Constraint names.** DuckDB names every constraint itself, a `UNIQUE` over
+  `a` and `b` of table `m` as `m_a_b_key`. The plan compares `CHECK`s and
+  foreign keys by what they say and a `UNIQUE` by its columns in order, never
+  by name, so a declaration that names a constraint differently plans
+  nothing. The creation carries a note that lists the declared names DuckDB
+  will not keep.
 
-A collation is part of a column's type in DuckDB, and Ptah compares no
-collation of its own, so the provider compares the two together: a changed
-collation reaches the planner, which refuses it by name.
+An enum column is DuckDB's `ENUM` type, which lists the values in the
+column's type. Ptah lowers a declared enum, a named `CREATE TYPE ... AS ENUM`
+or values written in the column, to that type (`schema.enum-columns`), so the
+column is `ENUM('a', 'b')` and no type of its own is created. A changed value
+list changes the column's type in place (`ALTER COLUMN ... TYPE`); rows keep
+their values by text, and a row that holds a value the new list leaves out
+makes DuckDB refuse the statement, so the plan rolls back.
+
+Ptah compares a column's collation as an aspect of its own
+(`schema.column-collations`), and the provider refuses a changed collation by
+name. For a host that does not list the feature, the provider compares the
+collation as part of the type, which is how DuckDB writes one, so the change
+still reaches the planner and is refused.
 
 A default that draws from a sequence (`DEFAULT nextval('app.ids')`) is
 checked in a private in-memory database that creates the sequence it names
@@ -285,8 +304,9 @@ the table's rows. Measured on the embedded DuckDB:
 A declaration DuckDB cannot hold is refused when Ptah validates the schema,
 before any planning: auto-increment and identity columns (declare a sequence
 and `DEFAULT nextval('...')`), `STORED` generated columns, constraints that are
-not enforced, a `UNIQUE` over an expression or over several columns (declare a
-unique index instead), foreign key rules other than `NO ACTION` and
+not enforced, a `UNIQUE` over an expression (declare a unique index instead)
+and, for a host that does not read UNIQUE constraints, one over several
+columns, foreign key rules other than `NO ACTION` and
 `RESTRICT`, deferrable keys, `MATCH`, keys into another schema, partial
 indexes, index methods other than ART, operator classes, `INCLUDE`, key order
 and `NULLS` placement, invisible indexes, triggers, table collations, storage
@@ -391,19 +411,21 @@ provider yet, or unavailable on the embedded DuckDB, with its evidence.
 | Extension and file access policy | Enforced | `TestSettings_HoldOnEveryFile`, `TestPolicy_RefusesExternalAccess` |
 | `transactional_ddl`, `ddl_inside_transaction` | True | `TestSessionCapabilities_MatchTheEngine` |
 | Identifier rules: ASCII case folding, schema-wide index names | Measured | `TestIdentifierRules_MatchTheEngine` |
-| Inspection of every schema: schemas as namespaces, tables, columns with native and nested types, defaults, generated columns, primary keys, single-column `UNIQUE`, `CHECK`, `FOREIGN KEY`, indexes, views, sequences, comments | Supported | `TestRead_RichSchema`, `TestRead_TypeInventory`, `TestInspect_RichSchema`, `TestProviderInspectsADatabaseFile` |
+| Inspection of every schema: schemas as namespaces, tables, columns with native and nested types, defaults, generated columns, primary keys, `UNIQUE`, `CHECK`, `FOREIGN KEY`, indexes, views, sequences, comments | Supported | `TestRead_RichSchema`, `TestRead_TypeInventory`, `TestInspect_RichSchema`, `TestProviderInspectsADatabaseFile` |
 | Macros, types made with `CREATE TYPE` | Refused by name; not modeled yet | `TestRead_FailurePath` |
-| `UNIQUE` over several columns | Refused by name; the contract has no field for it | `TestRead_FailurePath` |
+| `UNIQUE` over several columns: read, created, added, compared by columns | Supported for a host that reads UNIQUE constraints | `TestRead_UniqueConstraints`, `TestInspect_UniqueConstraints`, `TestHostKeepsUniqueConstraintsOverSeveralColumns` |
+| Enum columns as `ENUM('a', 'b')` | Supported | `TestHostCreatesEnumColumns`, `TestHostAddsAValueToAnEnumColumn` |
+| Column collations | Compared; a change is refused by name | `TestHostRefusesWhatDuckDBCannotDo` |
 | Schemas besides `main` | Supported for a host that reads namespaces | `TestInspect_EverySchema`, `TestInspect_SelectsSchemas`, `TestRead_AnotherSchema` |
 | Constraint names | Unsupported by the engine: DuckDB names constraints itself | `TestRead_RichSchema`, `TestRead_FailurePath` |
 | `VARCHAR(n)` length, index key order, foreign key rules other than `NO ACTION` | Unsupported by the engine | measured; see Inspection |
 | Partial indexes, `STORED` generated columns, schema comments, foreign keys into another schema | Unsupported by the engine | measured |
-| Conformance suite (offline, sessions, inspection, transactions) | Passes, except `live.locks`; see the contract gaps | `TestConformance` |
+| Conformance suite (offline, sessions, inspection, transactions, locks in process) | Passes, except `description.valid`; see the contract gaps | `TestConformance` |
 | Planning, rendering and running table changes, with each refusal by name | Supported | `integration/host_apply_e2e_test.go`, `integration/host_refusals_e2e_test.go` |
 | Views, sequences, comments and schemas in a plan | Supported | `TestHostManagesCommonObjects`, `TestHostManagesAnotherSchema` |
 | `ptah migrations generate` and `ptah migrations lint` | Supported | `integration/host_migrations_e2e_test.go` |
 | Transactions: a refused statement leaves nothing applied | Supported | `TestHostRollsBackAPlanDuckDBRefuses`, `TestConformance` (`live.transactions`) |
-| Locks | Supported for the sessions of one process; another process cannot open the file | `TestLocks` |
+| Locks | Supported for the sessions of one process; another process cannot open the file | `TestLocks`, `TestConformance` (`live.locks`) |
 | Revision history, run log and tags (`ptah migrations up`, `down`, `status`, `tag`, `log`), native and Atlas layouts | Supported | `TestHostRunsMigrationsUpAndDown`, `integration/history_fs_test.go`, `integration/metadata_fs_test.go` |
 | Transaction modes `file`, `none` and `all` | Supported | `TestHostRunsMigrationsInEachTransactionMode` |
 | The provider's tables reserved in a read | Supported | `TestInspect_ReservesTheProvidersTables` |
@@ -416,19 +438,13 @@ provider yet, or unavailable on the embedded DuckDB, with its evidence.
 These are generic omissions of the provider contract or of Ptah, recorded here
 and not worked around:
 
-- **UNIQUE over several columns.** An observed table carries a primary key,
-  FOREIGN KEY and CHECK constraints and indexes, and a single-column UNIQUE as
-  a column flag. A UNIQUE constraint over several columns has no field: it is
-  not an index, and `Table.constraints` takes FOREIGN KEY and CHECK only. The
-  read refuses such a table rather than report it as an index or leave the
-  constraint out, and a declaration of one is refused.
-- **Table ownership needs a table setting.** Ptah assigns a table to the
-  planning service that owns one of the table's settings. DuckDB's tables have
-  none of their own, so the provider declares a desired and an observed model,
-  `table-lifecycle`, no value of which exists, only to own their lifecycle.
-- **No collation aspect.** A column comparison asks for type, default,
-  nullability and sequence only. The provider compares a collation as part of
-  the type, which is how DuckDB writes one.
+- **Conformance under a host that lists no two-way feature.** The provider's
+  only planning service owns DuckDB's tables. A host that does not list
+  `planning.table-ownership` negotiates that ownership away, which leaves the
+  service planning nothing, and the SDK refuses such a host at `Describe`.
+  The suite accepts that refusal from a host that leaves out one feature, but
+  `description.valid` counts it as a failure from a host that lists none.
+  `TestConformance` holds that exact failure.
 - **Removal order of related tables.** Ptah orders the removals of tables by
   the declared schema's dependencies, which never name a removed table, and
   keeps them in a sequence of its own. An order between separate removal steps
@@ -439,11 +455,6 @@ and not worked around:
   `duckdb://:memory:<name>` is not one: Go's parser reads the name as a port.
   `duckdb://:memory:` passes. The provider provisions a dev database as a file
   for the same reason.
-- **The conformance suite's lock check.** `live.locks` opens the database from
-  a second process to take the lock against the first. DuckDB lets no second
-  process open a file one process writes, which is the exclusion the lock
-  exists for, so the check fails at the open. `TestConformance` holds that
-  exact failure; `TestLocks` covers the sessions of one process.
 
 ## Platforms
 

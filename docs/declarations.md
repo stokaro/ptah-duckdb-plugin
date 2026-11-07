@@ -49,8 +49,27 @@ WITH TIME ZONE`, the `TIMESTAMP` family and `INTERVAL`; `GEOMETRY` and
 (`T[N]`) of any of them. A type the provider does not know is refused, never
 read as text.
 
-An enum column is written as DuckDB's `ENUM('a', 'b')` in the column's
-definition: the provider creates no named type.
+An enum column is DuckDB's `ENUM('a', 'b')`, which lists the values in the
+column's type. Ptah lowers a declared enum to it, whether a named type
+declares the values (`CREATE TYPE mood AS ENUM ('happy', 'sad')`, a Go enum
+field) or the column writes them, so the provider creates no named type:
+
+```sql
+CREATE TABLE "main"."t" (
+  "id" INTEGER NOT NULL,
+  "m" ENUM('happy', 'sad') DEFAULT 'happy',
+  PRIMARY KEY ("id")
+);
+```
+
+A changed value list changes the column's type in place:
+
+```sql
+ALTER TABLE "main"."t" ALTER COLUMN "m" TYPE ENUM('happy', 'sad', 'calm');
+```
+
+Rows keep their values by text. A row that holds a value the new list leaves
+out makes DuckDB refuse the statement, and the plan rolls back.
 
 DuckDB normalizes some spellings, and a read reports what it holds: `TEXT` and
 `STRING` are `VARCHAR`, `NUMERIC` is `DECIMAL`, `INT8` is `BIGINT`, and
@@ -88,16 +107,19 @@ creates the sequence before the table.
 DuckDB computes a generated column when it reads a row (`VIRTUAL`); a `STORED`
 generated column is refused.
 
-A column may name a collation, such as `COLLATE nocase`. DuckDB writes a
-collation as part of the column's type, and the provider compares it so: a
-changed collation reaches the planner, which refuses it by name.
+A column may name a collation, such as `COLLATE nocase`. Ptah compares a
+collation as an aspect of the column, and the provider refuses a changed one
+by name: DuckDB changes no column's collation. A Ptah that does not compare
+collations (`schema.column-collations`) has the provider compare it as part of
+the type, which is how DuckDB writes one, and the change is refused the same
+way.
 
 ## Keys and constraints
 
 | Declaration | What DuckDB holds |
 | --- | --- |
 | A primary key, on one column or several | The key, its columns `NOT NULL`. |
-| `UNIQUE` on one column | The column's UNIQUE constraint. A UNIQUE over several columns is refused; declare a unique index instead. |
+| `UNIQUE`, on one column or several | The UNIQUE constraint, written in `CREATE TABLE` or added with `ADD UNIQUE`. One over several columns needs a Ptah that reads UNIQUE constraints (`schema.observed-unique-constraints`); for any other Ptah it is refused, and a unique index declares the same rule. |
 | `CHECK`, on a column or the table | The condition in DuckDB's spelling, `(score >= 0)`, written in `CREATE TABLE`. |
 | A foreign key | The key, into a table of the same schema, with the rule `NO ACTION`. |
 
@@ -109,10 +131,12 @@ DELETE` or `ON UPDATE` other than `NO ACTION` or `RESTRICT`, a deferrable key,
 ### Constraint names
 
 DuckDB names every constraint itself, after its table and columns
-(`users_score_check`), whatever name the declaration gives it. The plan
-compares `CHECK`s and foreign keys by what they say, never by name, so a
-declared name does not make the plan repeat itself, and the creation carries a
-note that lists the declared names DuckDB will not keep:
+(`users_score_check`, `m_a_b_key` for a UNIQUE over `a` and `b`), whatever
+name the declaration gives it. The plan compares `CHECK`s and foreign keys by
+what they say and a `UNIQUE` by its columns in order, never by name, so a
+declared name does not make the plan repeat itself, and a declaration that
+renames a constraint plans nothing. The creation carries a note that lists the
+declared names DuckDB will not keep:
 
 ```sql
 -- DUCKDB: DuckDB keeps no constraint names; table "posts" holds "fk_posts_user" under the names DuckDB gives them.
@@ -155,8 +179,13 @@ ALTER TABLE "main"."t" ALTER COLUMN "b" SET DEFAULT 2;
 ALTER TABLE "main"."t" ALTER COLUMN "b" TYPE BIGINT;
 ALTER TABLE "main"."t" ALTER COLUMN "b" SET NOT NULL;
 ALTER TABLE "main"."t" ADD UNIQUE ("c");
+ALTER TABLE "main"."t" ADD UNIQUE ("b", "c");
+ALTER TABLE "main"."t" ADD PRIMARY KEY ("id");
 ALTER TABLE "main"."t" DROP COLUMN "a";
 ```
+
+A key or a `UNIQUE` runs after the statements that add its columns or make
+them `NOT NULL`.
 
 DuckDB refuses many of these while the table has an index or another table's
 foreign key references it. [What the DuckDB provider refuses](limitations.md#changes-the-provider-refuses)

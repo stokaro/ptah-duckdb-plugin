@@ -11,13 +11,6 @@ import (
 	"github.com/stokaro/ptah-duckdb-plugin/internal/catalog"
 )
 
-// OwnershipKind is the model kind the planning service is assigned by: a
-// table setting no value of which exists. The host assigns a table to the
-// planning service that owns one of its settings, and DuckDB's tables have
-// none of their own, so the provider declares this kind to own their
-// lifecycle.
-const OwnershipKind = "github.com/stokaro/ptah-duckdb-plugin/table-lifecycle"
-
 // Declared says how DuckDB holds a declared table once it is created: its
 // columns with DuckDB's types, defaults and generated expressions, its key,
 // its UNIQUE columns and its CHECKs under the names DuckDB gives them. The

@@ -182,7 +182,28 @@ func (a *alteration) checkConstraints() error {
 				phrase(a.subject), column.GetName())
 		}
 	}
+	declaredUniques := UniqueConstraints(a.desired)
+	for _, columns := range heldUniques(a.current) {
+		if !slices.ContainsFunc(declaredUniques, func(unique []string) bool { return slices.Equal(foldAll(unique), columns) }) &&
+			!slices.ContainsFunc(columns, func(column string) bool { return slices.Contains(dropped, column) }) {
+			return unsupported(a.index, "table %s: the declaration drops the UNIQUE constraint over (%s), and DuckDB drops no UNIQUE constraint",
+				phrase(a.subject), strings.Join(columns, ", "))
+		}
+	}
 	return nil
+}
+
+// heldUniques are the UNIQUE constraints over several columns a table
+// holds, each with its columns folded as DuckDB compares names. A read
+// reports them to a host that reads schema.observed-unique-constraints.
+func heldUniques(table *protocol.ObservedTable) [][]string {
+	var uniques [][]string
+	for _, constraint := range table.GetConstraints() {
+		if strings.EqualFold(constraint.GetType(), "UNIQUE") && len(constraint.GetColumnNames()) > 1 {
+			uniques = append(uniques, foldAll(constraint.GetColumnNames()))
+		}
+	}
+	return uniques
 }
 
 // columnChange is one statement a kept column needs.
@@ -231,11 +252,17 @@ func (a *alteration) columnChanges() ([]columnChange, error) {
 			changes = append(changes, columnChange{column: name, operation: tableop.Operation{Action: action, Name: name}, alters: true})
 		}
 		if column.Unique && !current.GetUnique() {
-			changes = append(changes, columnChange{column: name, operation: tableop.Operation{Action: tableop.AddUnique, Name: name}, alters: true})
+			changes = append(changes, columnChange{column: name, operation: tableop.Operation{Action: tableop.AddUnique, Key: []string{name}}, alters: true})
 		}
 	}
 	if key := PrimaryKey(a.desired); len(key) > 0 && len(heldPrimaryKey(a.current)) == 0 {
 		changes = append(changes, columnChange{operation: tableop.Operation{Action: tableop.AddPrimaryKey, Key: slices.Clone(key)}, alters: true})
+	}
+	held := heldUniques(a.current)
+	for _, unique := range UniqueConstraints(a.desired) {
+		if !slices.ContainsFunc(held, func(columns []string) bool { return slices.Equal(columns, foldAll(unique)) }) {
+			changes = append(changes, columnChange{operation: tableop.Operation{Action: tableop.AddUnique, Key: unique}, alters: true})
+		}
 	}
 	return changes, nil
 }
@@ -252,7 +279,7 @@ func (a *alteration) typeChangeAllowed(column string) error {
 	}
 	for _, constraint := range a.current.GetConstraints() {
 		kind := strings.ToUpper(constraint.GetType())
-		if (kind == "CHECK" || kind == "FOREIGN KEY") && slices.Contains(foldAll(constraint.GetColumnNames()), foldASCII(column)) {
+		if (kind == "CHECK" || kind == "FOREIGN KEY" || kind == "UNIQUE") && slices.Contains(foldAll(constraint.GetColumnNames()), foldASCII(column)) {
 			return unsupported(a.index, "changing the type of column %q of table %s: DuckDB changes the type of no column in a %s constraint",
 				column, phrase(a.subject), kind)
 		}
@@ -353,14 +380,17 @@ func observedIndex(table *protocol.ObservedTable, name string) *protocol.Observe
 }
 
 // dropAllowed refuses the removal of a column DuckDB refuses to drop: one in
-// a primary key, a UNIQUE or a foreign key, and one that a primary key or
-// UNIQUE column follows ("an index depends on a column after it").
+// a primary key, a UNIQUE or a foreign key, and one that a column of a
+// primary key or a UNIQUE follows ("an index depends on a column after it").
 func (a *alteration) dropAllowed(column string) error {
 	keyed := foldAll(heldPrimaryKey(a.current))
 	for _, constraint := range a.current.GetConstraints() {
 		if strings.EqualFold(constraint.GetType(), "FOREIGN KEY") && slices.Contains(foldAll(constraint.GetColumnNames()), foldASCII(column)) {
 			return unsupported(a.index, "dropping column %q of table %s: DuckDB drops no column in a foreign key", column, phrase(a.subject))
 		}
+	}
+	for _, unique := range heldUniques(a.current) {
+		keyed = append(keyed, unique...)
 	}
 	position := slices.IndexFunc(a.current.GetColumns(), func(held *protocol.ObservedColumn) bool { return foldASCII(held.GetName()) == foldASCII(column) })
 	for i, held := range a.current.GetColumns() {
@@ -426,6 +456,11 @@ func (p *planner) emitColumns(a *alteration, changes []columnChange) (middle, st
 		}
 		middle, structural = append(middle, step), append(structural, step)
 	}
+	// previous is the last step that adds or changes each column: two changes
+	// of one column alter one subject, so they run in the order columnChanges
+	// lists them, and a key or a UNIQUE runs after the steps that add and
+	// change its columns.
+	previous := make(map[string]*protocol.StepIdentity)
 	for _, common := range a.columnAdds {
 		steps, err := p.addColumn(a, common)
 		if err != nil {
@@ -435,11 +470,10 @@ func (p *planner) emitColumns(a *alteration, changes []columnChange) (middle, st
 		if added := heldColumn(a.held, common.GetAddedColumn().GetName()); added != nil && (!added.Nullable || added.Unique) {
 			structural = append(structural, steps...)
 		}
+		if len(steps) > 0 {
+			previous[foldASCII(common.GetAddedColumn().GetName())] = steps[len(steps)-1]
+		}
 	}
-	// previous is the last step that changes each column: two changes of one
-	// column alter one subject, so they run in the order columnChanges lists
-	// them.
-	previous := make(map[string]*protocol.StepIdentity)
 	for _, change := range changes {
 		step, err := p.emitChange(a, change)
 		if err != nil {
@@ -449,10 +483,14 @@ func (p *planner) emitColumns(a *alteration, changes []columnChange) (middle, st
 		if change.alters {
 			structural = append(structural, step)
 		}
-		if change.column != "" {
-			p.depend(previous[foldASCII(change.column)], step)
-			previous[foldASCII(change.column)] = step
+		if change.column == "" {
+			for _, column := range change.operation.Key {
+				p.depend(previous[foldASCII(column)], step)
+			}
+			continue
 		}
+		p.depend(previous[foldASCII(change.column)], step)
+		previous[foldASCII(change.column)] = step
 	}
 	return middle, structural, nil
 }
@@ -465,11 +503,18 @@ func (p *planner) emitChange(a *alteration, change columnChange) (*protocol.Step
 			notes = []string{note}
 		}
 	}
-	subjectEffect := effect(a.subject, protocol.PlanningEffect_ALTER)
-	if change.column != "" {
-		subjectEffect = effect(childSubject(a.subject, "column", change.column), protocol.PlanningEffect_ALTER)
+	// A key or a UNIQUE over several columns alters each of its columns. An
+	// effect that alters the table itself would place the step before every
+	// step that reads the table, the addition of its columns among them.
+	columns := []string{change.column}
+	if change.column == "" {
+		columns = change.operation.Key
 	}
-	return p.add(a.index, a.subject, rankColumn, change.operation, notes, readTable(a.subject), subjectEffect)
+	effects := []*protocol.PlanningEffect{readTable(a.subject)}
+	for _, column := range columns {
+		effects = append(effects, effect(childSubject(a.subject, "column", column), protocol.PlanningEffect_ALTER))
+	}
+	return p.add(a.index, a.subject, rankColumn, change.operation, notes, effects...)
 }
 
 // emitIndexCreates replaces the host's creation of each index with CREATE
@@ -565,7 +610,7 @@ func (p *planner) addColumn(a *alteration, common *protocol.CommonPlanningStep) 
 	if err != nil || !held.Unique {
 		return []*protocol.StepIdentity{step}, err
 	}
-	unique, err := p.add(a.index, a.subject, rankColumn, tableop.Operation{Action: tableop.AddUnique, Name: name}, nil, readTable(a.subject),
+	unique, err := p.add(a.index, a.subject, rankColumn, tableop.Operation{Action: tableop.AddUnique, Key: []string{name}}, nil, readTable(a.subject),
 		effect(childSubject(a.subject, "column", name), protocol.PlanningEffect_ALTER))
 	if err != nil {
 		return nil, err
