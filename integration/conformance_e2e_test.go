@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"regexp"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -36,5 +37,5 @@ func TestConformance(t *testing.T) {
 	c.Assert(failures, qt.HasLen, 1, qt.Commentf("%v", report.Err()))
 	c.Assert(failures[0].ID, qt.Equals, "live.locks")
 	c.Assert(failures[0].Detail, qt.Matches, `a session of a second process: Open refused the address: Unavailable: another process \(PID [0-9]+\) `+
-		`has the database file open for writing; DuckDB lets no other process open it until that one closes it`)
+		regexp.QuoteMeta(writerHoldsReason))
 }
