@@ -198,6 +198,14 @@ stores it in, by parsing it and writing it back in a private in-memory
 database, and fills each declared sequence's settings with DuckDB's defaults,
 so Ptah compares a declaration with a read in the same terms.
 
+`CompareViewQueries` (`schema.view-query-equivalence`) answers whether a
+declared view's query and the one DuckDB holds are one query. Both texts are
+written back by DuckDB's parser in the same private database and compared
+exactly. DuckDB names a view's column after its alias and keeps the alias's
+case, so `SELECT id AS "ID"` and `SELECT id AS "Id"` are two views; Ptah's own
+comparison of the texts folds case and calls them one. A Ptah that does not
+make the call (contract 25.32) compares the texts as before.
+
 ## Planning and applying
 
 `ptah schema apply` and `ptah migrations generate` work through this
@@ -247,8 +255,9 @@ another schema is refused, since the read could not see it afterwards.
 
 ### What DuckDB keeps differently
 
-DuckDB keeps neither a declared length nor a declared constraint name. The
-plan says so, instead of failing or planning the same change on every run:
+DuckDB keeps no declared length, no timestamp precision it has no type for,
+and no declared constraint name. The plan says so, instead of failing or
+planning the same change on every run:
 
 - **`VARCHAR(n)`.** DuckDB accepts a length and keeps none: `VARCHAR(255)`,
   `CHAR(2)` and `TEXT` are all `VARCHAR`, and `VARCHAR(5)[]` is `VARCHAR[]`.
@@ -256,12 +265,27 @@ plan says so, instead of failing or planning the same change on every run:
   `DUCKDB: column "email" of table "users" is declared VARCHAR(255); DuckDB
   keeps no length and holds it as VARCHAR, which takes text of any length.`
   The note is printed with the plan and written into a generated migration.
+- **`BIT(n)`.** `BIT(8)` and `BIT VARYING(8)` are `BIT`, which takes bits of
+  any length; the plan carries the same kind of note.
+- **`TIMESTAMP(p)`.** DuckDB keeps precisions 0, 3, 6 and 9, as
+  `TIMESTAMP_S`, `TIMESTAMP_MS`, `TIMESTAMP` and `TIMESTAMP_NS`. Any other
+  precision is held at the next one up: `TIMESTAMP(1)` and `TIMESTAMP(2)` as
+  `TIMESTAMP_MS`, `TIMESTAMP(4)` and `TIMESTAMP(5)` as `TIMESTAMP`,
+  `TIMESTAMP(7)` and `TIMESTAMP(8)` as `TIMESTAMP_NS`, with a note.
 - **Constraint names.** DuckDB names every constraint itself, a `UNIQUE` over
   `a` and `b` of table `m` as `m_a_b_key`. The plan compares `CHECK`s and
   foreign keys by what they say and a `UNIQUE` by its columns in order, never
   by name, so a declaration that names a constraint differently plans
   nothing. The creation carries a note that lists the declared names DuckDB
   will not keep.
+
+A Ptah that lists `render.omissions` (contract 25.33) also receives each lost
+length and precision from the render, as an omission of the column: reason
+`unsupported`, property `type modifier`, detail such as `VARCHAR(255): length
+255`, and a remedy where one exists, such as a `CHECK` on the column's length.
+A caller that must not lose a declaration, such as a program that renders
+through Ptah's Go API, can then refuse the rendering. Ptah's commands print
+the notes and not the omissions.
 
 An enum column is DuckDB's `ENUM` type, which lists the values in the
 column's type. Ptah lowers a declared enum, a named `CREATE TYPE ... AS ENUM`
@@ -418,9 +442,10 @@ provider yet, or unavailable on the embedded DuckDB, with its evidence.
 | Column collations | Compared; a change is refused by name | `TestHostRefusesWhatDuckDBCannotDo` |
 | Schemas besides `main` | Supported for a host that reads namespaces | `TestInspect_EverySchema`, `TestInspect_SelectsSchemas`, `TestRead_AnotherSchema` |
 | Constraint names | Unsupported by the engine: DuckDB names constraints itself | `TestRead_RichSchema`, `TestRead_FailurePath` |
-| `VARCHAR(n)` length, index key order, foreign key rules other than `NO ACTION` | Unsupported by the engine | measured; see Inspection |
+| `VARCHAR(n)` and `BIT(n)` lengths, `TIMESTAMP(p)` precisions other than 0, 3, 6 and 9, index key order, foreign key rules other than `NO ACTION` | Unsupported by the engine; a plan notes each length and precision, and a render reports it (`render.omissions`) | measured; see Inspection, `TestHostNotesTheTypesDuckDBKeepsInPart`, `TestRender_ReportsWhatDuckDBDoesNotKeep` |
+| View queries compared as DuckDB writes them back (`schema.view-query-equivalence`) | Supported | `TestCompareViewQueries`, `TestHostKeepsTheViewsDuckDBRewrites`, `TestHostReplacesAViewWhoseAliasChangesCase` |
 | Partial indexes, `STORED` generated columns, schema comments, foreign keys into another schema | Unsupported by the engine | measured |
-| Conformance suite (offline, sessions, inspection, transactions, locks in process) | Passes, except `description.valid`; see the contract gaps | `TestConformance` |
+| Conformance suite (offline, sessions, inspection, transactions, locks in process) | Passes | `TestConformance` |
 | Planning, rendering and running table changes, with each refusal by name | Supported | `integration/host_apply_e2e_test.go`, `integration/host_refusals_e2e_test.go` |
 | Views, sequences, comments and schemas in a plan | Supported | `TestHostManagesCommonObjects`, `TestHostManagesAnotherSchema` |
 | `ptah migrations generate` and `ptah migrations lint` | Supported | `integration/host_migrations_e2e_test.go` |
@@ -438,13 +463,6 @@ provider yet, or unavailable on the embedded DuckDB, with its evidence.
 These are generic omissions of the provider contract or of Ptah, recorded here
 and not worked around:
 
-- **Conformance under a host that lists no two-way feature.** The provider's
-  only planning service owns DuckDB's tables. A host that does not list
-  `planning.table-ownership` negotiates that ownership away, which leaves the
-  service planning nothing, and the SDK refuses such a host at `Describe`.
-  The suite accepts that refusal from a host that leaves out one feature, but
-  `description.valid` counts it as a failure from a host that lists none.
-  `TestConformance` holds that exact failure.
 - **Removal order of related tables.** Ptah orders the removals of tables by
   the declared schema's dependencies, which never name a removed table, and
   keeps them in a sequence of its own. An order between separate removal steps

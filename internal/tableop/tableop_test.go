@@ -42,6 +42,11 @@ func TestCapture_HappyPath(t *testing.T) {
 		{"drop column", tableop.Operation{Action: tableop.DropColumn, Name: "c"}, `ALTER TABLE "main"."t" DROP COLUMN "c"`, protocol.ChangeSemantics_DESTRUCTIVE},
 		{"change a type", tableop.Operation{Action: tableop.AlterColumnType, Name: "c", Type: "BIGINT"}, `ALTER TABLE "main"."t" ALTER COLUMN "c" TYPE BIGINT`,
 			protocol.ChangeSemantics_BEHAVIORAL},
+		{"change a type to one DuckDB keeps in part", tableop.Operation{Action: tableop.AlterColumnType, Name: "c", Type: "TIMESTAMP_MS", Declared: "TIMESTAMP(1)"},
+			`ALTER TABLE "main"."t" ALTER COLUMN "c" TYPE TIMESTAMP_MS`, protocol.ChangeSemantics_BEHAVIORAL},
+		{"add a column DuckDB keeps in part", tableop.Operation{Action: tableop.AddColumn,
+			Column: &tableop.Column{Name: "c", Type: "VARCHAR", Nullable: true, Declared: "VARCHAR(255)"}},
+			`ALTER TABLE "main"."t" ADD COLUMN "c" VARCHAR`, protocol.ChangeSemantics_ADDITIVE},
 		{"set a default", tableop.Operation{Action: tableop.SetDefault, Name: "c", Default: "1"}, `ALTER TABLE "main"."t" ALTER COLUMN "c" SET DEFAULT 1`,
 			protocol.ChangeSemantics_ADDITIVE},
 		{"drop a default", tableop.Operation{Action: tableop.DropDefault, Name: "c"}, `ALTER TABLE "main"."t" ALTER COLUMN "c" DROP DEFAULT`,
@@ -99,6 +104,11 @@ func TestCapture_FailurePath(t *testing.T) {
 			"a drop-tables operation drops two or more tables, its owner first"},
 		{"a table to drop twice", tableop.Owner("main", "t"), tableop.Operation{Action: tableop.DropTables, Tables: []string{"t", "u", "u"}},
 			"a drop-tables operation names each table once"},
+		{"a declared type DuckDB keeps whole", tableop.Owner("main", "t"),
+			tableop.Operation{Action: tableop.AddColumn, Column: &tableop.Column{Name: "c", Type: "VARCHAR", Declared: "VARCHAR"}},
+			`the add-column operation declares column "c" as VARCHAR, which DuckDB keeps whole`},
+		{"a declared type on an action without a column type", tableop.Owner("main", "t"),
+			tableop.Operation{Action: tableop.DropColumn, Name: "c", Declared: "VARCHAR(255)"}, "a drop-column operation does not take declared"},
 		{"an owner with a database", &protocol.Reference{Engine: "duckdb", Kind: "table", Database: "app", Schema: "main", Name: "t"},
 			tableop.Operation{Action: tableop.DropTable}, "a DuckDB table operation names a table by its schema and name and nothing else"},
 		{"an owner of another engine", &protocol.Reference{Engine: "sqlite", Kind: "table", Schema: "main", Name: "t"},
@@ -142,4 +152,17 @@ func TestStatement_FailurePath(t *testing.T) {
 			c.Assert(statement, qt.Equals, "")
 		})
 	}
+}
+
+// An operation lists the declared types it carries beside the types it
+// writes, in column order, so its render reports each omission once.
+func TestDeclaredTypes(t *testing.T) {
+	c := testcheck.New(t)
+	create := tableop.Operation{Action: tableop.CreateTable, Columns: []tableop.Column{
+		{Name: "id", Type: "INTEGER"}, {Name: "email", Type: "VARCHAR", Declared: "VARCHAR(255)"}, {Name: "flags", Type: "BIT", Declared: "BIT(8)"},
+	}}
+	c.Assert(create.DeclaredTypes(), qt.DeepEquals, []tableop.DeclaredType{{Column: "email", Type: "VARCHAR(255)"}, {Column: "flags", Type: "BIT(8)"}})
+	alter := tableop.Operation{Action: tableop.AlterColumnType, Name: "seen", Type: "TIMESTAMP_MS", Declared: "TIMESTAMP(1)"}
+	c.Assert(alter.DeclaredTypes(), qt.DeepEquals, []tableop.DeclaredType{{Column: "seen", Type: "TIMESTAMP(1)"}})
+	c.Assert(tableop.Operation{Action: tableop.DropColumn, Name: "c"}.DeclaredTypes(), qt.IsNil)
 }

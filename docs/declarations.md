@@ -15,11 +15,13 @@ sourceOfTruth:
   - internal/scratch
   - internal/commonobject
   - internal/catalog
+  - internal/typeloss
   - stokaro/ptah#5667
 generated: false
 searchAliases:
   - "DuckDB column types"
   - "DuckDB VARCHAR length"
+  - "DuckDB TIMESTAMP precision"
   - "DuckDB constraint names"
 overlaps: []
 disposition: keep
@@ -94,6 +96,24 @@ CREATE TABLE "main"."users" (
 
 The note is printed with the plan and written into a generated migration.
 
+### BIT(n) and TIMESTAMP(p)
+
+`BIT(8)` and `BIT VARYING(8)` are `BIT`, which takes bits of any length.
+DuckDB keeps the timestamp precisions 0, 3, 6 and 9, as `TIMESTAMP_S`,
+`TIMESTAMP_MS`, `TIMESTAMP` and `TIMESTAMP_NS`, and holds any other precision
+at the next one up: `TIMESTAMP(1)` is `TIMESTAMP_MS`. The plan converges on
+the type DuckDB holds and carries a note for each:
+
+```sql
+-- DUCKDB: column "flags" of table "readings" is declared BIT(8); DuckDB keeps no length and holds it as BIT, which takes bits of any length.
+-- DUCKDB: column "taken" of table "readings" is declared TIMESTAMP(1); DuckDB does not keep precision 1 and holds it as TIMESTAMP_MS, which keeps milliseconds.
+```
+
+A Ptah of contract 25.33 also receives each lost length and precision from
+the render as an omission of the column (`render.omissions`), so a program
+that renders through Ptah's Go API and must not lose a declaration can refuse
+the rendering. Ptah's commands print the notes.
+
 ## Defaults and generated columns
 
 A default is a literal or an expression. A literal on a numeric or boolean
@@ -162,7 +182,7 @@ the old one removed plans a drop and a creation.
 
 | Object | What the provider writes |
 | --- | --- |
-| View | `CREATE VIEW`, and a changed query as `DROP VIEW` then `CREATE VIEW`. The query is compared in the spelling DuckDB stores it in. A materialized view, `WITH CHECK OPTION` and a view that names its columns are refused. |
+| View | `CREATE VIEW`, and a changed query as `DROP VIEW` then `CREATE VIEW`. The query is compared in the spelling DuckDB stores it in; for a Ptah of contract 25.33 the provider compares it, keeping the case of a column alias, which names the view's column. A materialized view, `WITH CHECK OPTION` and a view that names its columns are refused. |
 | Sequence | `CREATE SEQUENCE` with `INCREMENT BY`, `MINVALUE`, `MAXVALUE`, `START WITH` and `CYCLE`. A DuckDB sequence counts in `BIGINT`, has no cache and no owner. DuckDB alters no sequence, and replacing one would restart its counter, so a changed sequence is refused. |
 | Schema | `CREATE SCHEMA`, for a Ptah that reads `schema.common-namespaces`. For any other Ptah a declaration in a schema other than `main` is refused, since the read could not see it afterwards. A comment on a schema is refused. |
 | Comment | `COMMENT ON` a table, a column, an index, a view or a sequence; an empty comment removes it. |

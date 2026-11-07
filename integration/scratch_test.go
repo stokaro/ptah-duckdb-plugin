@@ -99,3 +99,35 @@ func TestPrepareCommonObjects_FailurePath(t *testing.T) {
 	c.Assert(status.Convert(err).Message(), qt.Equals, `view "v": DuckDB cannot parse its query as one SELECT`)
 	c.Assert(prepared, qt.IsNil)
 }
+
+// A declared view's query and the one DuckDB holds are one query when DuckDB
+// writes them back as one text. DuckDB writes keywords, spacing and
+// parentheses its own way and keeps a star as written, and it keeps the case
+// of a name as written, which for a column alias is the case of the view's
+// column. A query DuckDB cannot parse is no query the view holds.
+func TestCompareViewQueries(t *testing.T) {
+	tests := []struct {
+		name, declared, held string
+		want                 bool
+	}{
+		{"one query in two spellings", "select id from t where id>0", "SELECT id FROM t WHERE (id > 0)", true},
+		{"a star", "SELECT * FROM t", "SELECT * FROM t", true},
+		{"a rewritten count and LIKE", "select count(*) as n from t where name like 'a%'", `SELECT count_star() AS n FROM t WHERE ("name" ~~ 'a%')`, true},
+		{"another condition", "SELECT id FROM t WHERE id > 1", "SELECT id FROM t WHERE (id > 0)", false},
+		{"an alias whose case changed", `SELECT id AS "ID" FROM t`, "SELECT id AS Id FROM t", false},
+		{"a declaration DuckDB cannot parse", "DELETE FROM t", "SELECT id FROM t", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			identity := &protocol.Reference{Engine: "duckdb", Kind: "view", Schema: "main", Name: "v"}
+			compared, err := backend.New().CompareViewQueries(c.Context(), &protocol.CompareViewQueriesRequest{Engine: "duckdb",
+				Pairs: []*protocol.ViewQueryPair{{Current: &protocol.ObservedView{Identity: identity, Body: tc.held}, Declared: tc.declared}}})
+			c.Assert(err, qt.IsNil)
+			c.Assert(compared.GetComplete(), qt.IsTrue)
+			c.Assert(compared.GetQueries(), qt.HasLen, 1)
+			c.Assert(compared.GetQueries()[0].GetIdentity().GetName(), qt.Equals, "v")
+			c.Assert(compared.GetQueries()[0].GetEquivalent(), qt.Equals, tc.want)
+		})
+	}
+}
