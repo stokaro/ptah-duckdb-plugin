@@ -48,6 +48,7 @@ func unsupported(format string, args ...any) error {
 
 // Schema is what a read found in one schema.
 type Schema struct {
+	Name      string
 	Tables    []Table
 	Views     []View
 	Sequences []Sequence
@@ -138,11 +139,12 @@ type Querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// UserSchemas lists the schemas of database besides main, which DuckDB marks
-// internal although it holds the user's objects.
-func UserSchemas(ctx context.Context, conn Querier, database string) ([]string, error) {
+// Schemas lists the schemas of database by name: main, which DuckDB marks
+// internal although it holds the user's objects, and every schema a
+// statement created.
+func Schemas(ctx context.Context, conn Querier, database string) ([]string, error) {
 	rows, err := conn.QueryContext(ctx,
-		"SELECT schema_name FROM duckdb_schemas() WHERE database_name = $1 AND NOT internal ORDER BY schema_name", database)
+		"SELECT schema_name FROM duckdb_schemas() WHERE database_name = $1 AND (schema_name = 'main' OR NOT internal) ORDER BY schema_name", database)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +178,7 @@ func Read(ctx context.Context, conn Querier, database, schema string) (Schema, e
 	if err != nil {
 		return Schema{}, err
 	}
-	return Schema{Tables: tables, Views: views, Sequences: sequences}, nil
+	return Schema{Name: schema, Tables: tables, Views: views, Sequences: sequences}, nil
 }
 
 // refuseUnmodeled refuses a macro or a named type in the schema.

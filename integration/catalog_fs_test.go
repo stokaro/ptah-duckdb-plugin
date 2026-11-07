@@ -32,6 +32,7 @@ func TestRead_RichSchema(t *testing.T) {
 	code, amount := column(c, "code", "VARCHAR", false), column(c, "amount", "DECIMAL(12,3)", true)
 	code.Unique, code.Comment, amount.Default = true, "the code", new("1.5")
 	c.Assert(read, qt.DeepEquals, catalog.Schema{
+		Name: "main",
 		Tables: []catalog.Table{
 			{
 				Name: "child",
@@ -105,7 +106,7 @@ func TestRead_EmptySchema(t *testing.T) {
 	handle := seedMemory(c, nil)
 	read, err := catalog.Read(c.Context(), handle.Conn(), "memory", "main")
 	c.Assert(err, qt.IsNil)
-	c.Assert(read, qt.DeepEquals, catalog.Schema{})
+	c.Assert(read, qt.DeepEquals, catalog.Schema{Name: "main"})
 }
 
 // Temporary objects belong to one connection, not to the database, and a
@@ -115,7 +116,7 @@ func TestRead_LeavesOutTemporaryObjects(t *testing.T) {
 	handle := seedMemory(c, []string{"CREATE TEMP TABLE scratch(a INTEGER)", "CREATE TEMP VIEW scratch_view AS SELECT 1", "CREATE TEMP SEQUENCE scratch_seq"})
 	read, err := catalog.Read(c.Context(), handle.Conn(), "memory", "main")
 	c.Assert(err, qt.IsNil)
-	c.Assert(read, qt.DeepEquals, catalog.Schema{})
+	c.Assert(read, qt.DeepEquals, catalog.Schema{Name: "main"})
 }
 
 func TestRead_FailurePath(t *testing.T) {
@@ -152,4 +153,26 @@ func TestRead_FailurePath(t *testing.T) {
 			c.Assert(read, qt.DeepEquals, catalog.Schema{})
 		})
 	}
+}
+
+// A schema a statement created holds objects as main does, and its foreign
+// keys stay inside it: DuckDB refuses one into another schema.
+func TestRead_AnotherSchema(t *testing.T) {
+	c := testcheck.New(t)
+	handle := seedMemory(c, []string{
+		"CREATE SCHEMA Sales", "CREATE TABLE sales.orders(id INTEGER PRIMARY KEY)",
+		"CREATE TABLE sales.lines(order_id INTEGER REFERENCES sales.orders(id))", "CREATE VIEW sales.recent AS SELECT id FROM sales.orders",
+		"CREATE TABLE elsewhere(id INTEGER)",
+	})
+	schemas, err := catalog.Schemas(c.Context(), handle.Conn(), "memory")
+	c.Assert(err, qt.IsNil)
+	c.Assert(schemas, qt.DeepEquals, []string{"Sales", "main"})
+	read, err := catalog.Read(c.Context(), handle.Conn(), "memory", "Sales")
+	c.Assert(err, qt.IsNil)
+	c.Assert(read.Name, qt.Equals, "Sales")
+	c.Assert(read.Tables, qt.HasLen, 2)
+	c.Assert(read.Tables[0].ForeignKeys, qt.DeepEquals, []catalog.ForeignKey{
+		{Name: "lines_order_id_id_fkey", Columns: []string{"order_id"}, RefTable: "orders", RefColumns: []string{"id"}},
+	})
+	c.Assert(read.Views, qt.DeepEquals, []catalog.View{{Name: "recent", Query: "SELECT id FROM sales.orders"}})
 }

@@ -6,11 +6,12 @@
 // and reports the embedded DuckDB's version, the session's identifier rules
 // and the capabilities measured on that DuckDB.
 //
-// Inspect reads the main schema of a database from DuckDB's catalog (see the
-// catalog package): tables with their columns in DuckDB's own type spelling,
-// primary keys, UNIQUE, CHECK and FOREIGN KEY constraints and indexes, and
-// views, sequences and comments. A read describes the schema completely or
-// fails with a reason that names what it does not describe.
+// Inspect reads the schemas of a database from DuckDB's catalog (see the
+// catalog package): the schemas themselves, tables with their columns in
+// DuckDB's own type spelling, primary keys, UNIQUE, CHECK and FOREIGN KEY
+// constraints and indexes, and views, sequences and comments. A read
+// describes its scope completely or fails with a reason that names what it
+// does not describe.
 //
 // The provider plans, renders and runs nothing yet.
 package backend
@@ -46,7 +47,7 @@ const semanticIdentity = "duckdb-1"
 // minimumContract is the oldest contract a host must speak to start the
 // provider: the one the SDK it is built with speaks. An older host is refused
 // before a session opens.
-const minimumContract = 28
+const minimumContract = 29
 
 // Provider serves the duckdb engine. The zero value is ready to use, and one
 // value serves every session of the process.
@@ -85,8 +86,10 @@ func providerFeatures() []string {
 		// The SDK pairs the observations above with the normalization
 		// service; the provider declares no model for it.
 		provider.NormalizeValuesFeature,
-		// Views, sequences and comments travel on the common-object wire.
+		// Views, sequences, comments and schemas travel on the common-object
+		// wire.
 		provider.CommonObjectsFeature,
+		provider.CommonNamespacesFeature,
 	}
 }
 

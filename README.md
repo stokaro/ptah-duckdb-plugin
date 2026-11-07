@@ -8,7 +8,7 @@ subprocess and talks to it over the provider protocol of
 **The provider opens and reads databases; it plans, renders and runs nothing
 yet.** It opens DuckDB database files and in-memory databases, reports the
 embedded DuckDB's version, identifier rules and capabilities, and reads the
-main schema of a database completely or refuses the read by name. Ptah
+schemas of a database completely or refuses the read by name. Ptah
 requires rendering, execution and SQL analysis of every provider it runs, so
 a Ptah command does not use this provider yet; the SDK's client and its
 conformance suite do. The other services follow, each advertised in the
@@ -123,8 +123,8 @@ never lets it do. A corrupt file is refused with its checksum mismatch named.
 
 ## Inspection
 
-`Inspect` reads the main schema of the session's database from DuckDB's own
-catalog functions (`duckdb_tables()`, `duckdb_columns()`,
+`Inspect` reads the schemas of the session's database that a read selects,
+every schema when it selects none, from DuckDB's own catalog functions (`duckdb_tables()`, `duckdb_columns()`,
 `duckdb_constraints()`, `duckdb_indexes()`, `duckdb_views()`,
 `duckdb_sequences()`, `duckdb_types()` and `duckdb_functions()`). A read is
 complete or it fails with `FailedPrecondition` and a reason that names what
@@ -135,6 +135,7 @@ What a read carries:
 
 | Object | Read as |
 | --- | --- |
+| Schema | A namespace on the common-object wire (`schema.common-namespaces`), `main` included. A selector names a schema without regard to ASCII case; one that names no schema selects nothing. |
 | Table | Name and comment; temporary tables belong to a connection and are left out. |
 | Column | DuckDB's own type spelling, nullability, default expression as DuckDB stores it (`nextval('seq_id')`, `list_value(1, 2)`), the expression of a generated column (DuckDB's are all `VIRTUAL`), comment. A `DECIMAL` also states its precision and scale. |
 | Primary key | DuckDB's name for it and its columns in key order. |
@@ -171,9 +172,9 @@ DuckDB holds:
 
 What a read refuses, by name:
 
-- a schema besides `main`, in a read of the whole database (a read that
-  selects `main` reads it alone), and a selector that names another schema:
-  Ptah's contract does not carry schemas yet;
+- a schema besides `main` for a host that does not read namespaces
+  (`schema.common-namespaces`): such a host could not tell it from a schema
+  the database does not have. A read that selects `main` reads it alone;
 - a macro or a type made with `CREATE TYPE`, which the provider does not model;
 - a `UNIQUE` constraint over more than one column (see the contract gaps);
 - two constraints of one table under one name, such as two `CHECK`s over the
@@ -234,13 +235,13 @@ provider yet, or unavailable on the embedded DuckDB, with its evidence.
 | Extension and file access policy | Enforced | `TestSettings_HoldOnEveryFile`, `TestPolicy_RefusesExternalAccess` |
 | `transactional_ddl`, `ddl_inside_transaction` | True | `TestSessionCapabilities_MatchTheEngine` |
 | Identifier rules: ASCII case folding, schema-wide index names | Measured | `TestIdentifierRules_MatchTheEngine` |
-| Inspection of the main schema: tables, columns with native and nested types, defaults, generated columns, primary keys, single-column `UNIQUE`, `CHECK`, `FOREIGN KEY`, indexes, views, sequences, comments | Supported | `TestRead_RichSchema`, `TestRead_TypeInventory`, `TestInspect_RichSchema`, `TestProviderInspectsADatabaseFile` |
+| Inspection of every schema: schemas as namespaces, tables, columns with native and nested types, defaults, generated columns, primary keys, single-column `UNIQUE`, `CHECK`, `FOREIGN KEY`, indexes, views, sequences, comments | Supported | `TestRead_RichSchema`, `TestRead_TypeInventory`, `TestInspect_RichSchema`, `TestProviderInspectsADatabaseFile` |
 | Macros, types made with `CREATE TYPE` | Refused by name; not modeled yet | `TestRead_FailurePath` |
 | `UNIQUE` over several columns | Refused by name; the contract has no field for it | `TestRead_FailurePath` |
-| Schemas besides `main` | Refused by name until the contract carries schemas | `TestInspect_FailurePath` |
+| Schemas besides `main` | Supported for a host that reads namespaces | `TestInspect_EverySchema`, `TestInspect_SelectsSchemas`, `TestRead_AnotherSchema` |
 | Constraint names | Unsupported by the engine: DuckDB names constraints itself | `TestRead_RichSchema`, `TestRead_FailurePath` |
 | `VARCHAR(n)` length, index key order, foreign key rules other than `NO ACTION` | Unsupported by the engine | measured; see Inspection |
-| Partial indexes, `STORED` generated columns, schema comments | Unsupported by the engine | measured |
+| Partial indexes, `STORED` generated columns, schema comments, foreign keys into another schema | Unsupported by the engine | measured |
 | Conformance suite (offline, sessions, inspection) | Passes | `TestConformance` |
 | Preparing declared views and sequences, rendering, planning, execution, history, locks, dev databases | Not implemented yet | |
 | Release lines | Not declared | the contract requires an image for a tested line; see below |

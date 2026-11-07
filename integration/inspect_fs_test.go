@@ -4,6 +4,7 @@ package integration_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -22,8 +23,13 @@ import (
 func readerFeatures() []string {
 	return []string{
 		provider.ErrorReasonsFeature, provider.ObservedColumnsFeature, provider.ObservedPrimaryKeysFeature,
-		provider.ObservedConstraintsFeature, provider.ObservedIndexesFeature, provider.CommonObjectsFeature,
+		provider.ObservedConstraintsFeature, provider.ObservedIndexesFeature, provider.CommonObjectsFeature, provider.CommonNamespacesFeature,
 	}
+}
+
+// featuresWithout is readerFeatures without the ones dropped.
+func featuresWithout(dropped ...string) []string {
+	return slices.DeleteFunc(readerFeatures(), func(feature string) bool { return slices.Contains(dropped, feature) })
 }
 
 // inspectAs reads address in process as a host that lists features, and
@@ -90,6 +96,9 @@ func TestInspect_RichSchema(t *testing.T) {
 		Identity: &protocol.Reference{Engine: "duckdb", Database: "rich", Schema: "main", Kind: "sequence", Name: "seq_id"},
 		DataType: "BIGINT", Start: new(int64(10)), Increment: new(int64(5)), MinValue: new(int64(1)), MaxValue: new(int64(1000)), Cycle: true,
 	}})
+	c.Assert(common.GetNamespaces(), qt.CmpEquals(protocmp.Transform()), []*protocol.ObservedNamespace{
+		{Identity: &protocol.Reference{Engine: "duckdb", Database: "rich", Kind: "schema", Name: "main"}},
+	})
 	var comments []string
 	for _, comment := range common.GetComments() {
 		comments = append(comments, comment.GetObject().GetKind()+" "+comment.GetObject().GetName()+": "+comment.GetText())
@@ -110,23 +119,56 @@ func TestInspect_NormalizesNamesAsDuckDBComparesThem(t *testing.T) {
 	c.Assert(snapshot.GetTables()[0].GetNormalizedIdentity().GetName(), qt.Equals, "mixed Ärger")
 }
 
-// A read that selects main reads it alone, whatever other schema the
-// database holds, and binds the selector to the main schema.
-func TestInspect_SelectsMain(t *testing.T) {
+// A read of the whole database reads every schema and lists each as a
+// namespace; objects keep their schema.
+func TestInspect_EverySchema(t *testing.T) {
 	c := testcheck.New(t)
-	path := seedFile(c, "schemas.duckdb", []string{"CREATE TABLE kept(id INTEGER)", "CREATE SCHEMA other", "CREATE TABLE other.elsewhere(id INTEGER)"})
-	snapshot, err := inspectAs(c, readerFeatures(), fileAddress(path), "MAIN")
+	path := seedFile(c, "schemas.duckdb", []string{"CREATE TABLE kept(id INTEGER)", "CREATE SCHEMA Other", "CREATE TABLE other.elsewhere(id INTEGER)",
+		"CREATE SCHEMA empty", "CREATE VIEW other.v AS SELECT 1 AS one"})
+	snapshot, err := inspectAs(c, readerFeatures(), fileAddress(path))
+	c.Assert(err, qt.IsNil)
+	var tables []string
+	for _, table := range snapshot.GetTables() {
+		tables = append(tables, table.GetIdentity().GetSchema()+"."+table.GetIdentity().GetName()+" "+table.GetNormalizedIdentity().GetSchema())
+	}
+	c.Assert(tables, qt.DeepEquals, []string{"Other.elsewhere other", "main.kept main"})
+	var namespaces []string
+	for _, namespace := range snapshot.GetCommonObjects().GetNamespaces() {
+		namespaces = append(namespaces, namespace.GetIdentity().GetName())
+	}
+	c.Assert(namespaces, qt.DeepEquals, []string{"Other", "empty", "main"})
+	c.Assert(snapshot.GetCommonObjects().GetViews()[0].GetIdentity().GetSchema(), qt.Equals, "Other")
+}
+
+// A read that selects schemas reads them alone, binds each selector to the
+// schema it names without regard to ASCII case, and binds a selector that
+// names no schema to no namespace.
+func TestInspect_SelectsSchemas(t *testing.T) {
+	c := testcheck.New(t)
+	path := seedFile(c, "schemas.duckdb", []string{"CREATE TABLE kept(id INTEGER)", "CREATE SCHEMA Other", "CREATE TABLE other.elsewhere(id INTEGER)"})
+	snapshot, err := inspectAs(c, readerFeatures(), fileAddress(path), "OTHER", "missing")
 	c.Assert(err, qt.IsNil)
 	c.Assert(snapshot.GetTables(), qt.HasLen, 1)
-	c.Assert(snapshot.GetTables()[0].GetIdentity().GetName(), qt.Equals, "kept")
-	c.Assert(snapshot.GetScopeBindings(), qt.CmpEquals(protocmp.Transform()), []*protocol.InspectionScopeBinding{{
-		Selector: "MAIN",
-		Namespaces: []*protocol.ModelNamespace{{
+	c.Assert(snapshot.GetTables()[0].GetIdentity().GetName(), qt.Equals, "elsewhere")
+	c.Assert(snapshot.GetCommonObjects().GetNamespaces(), qt.HasLen, 1)
+	c.Assert(snapshot.GetScopeBindings(), qt.CmpEquals(protocmp.Transform()), []*protocol.InspectionScopeBinding{
+		{Selector: "OTHER", Namespaces: []*protocol.ModelNamespace{{
 			Database: &protocol.NamespaceComponent{Source: "schemas", Normalized: "schemas"},
 			Catalog:  &protocol.NamespaceComponent{},
-			Schema:   &protocol.NamespaceComponent{Source: "main", Normalized: "main"},
-		}},
-	}})
+			Schema:   &protocol.NamespaceComponent{Source: "Other", Normalized: "other"},
+		}}},
+		{Selector: "missing", Namespaces: make([]*protocol.ModelNamespace, 0)},
+	})
+}
+
+// A host that does not read namespaces gets main alone when it selects main.
+func TestInspect_SelectsMainForAHostWithoutNamespaces(t *testing.T) {
+	c := testcheck.New(t)
+	path := seedFile(c, "schemas.duckdb", []string{"CREATE TABLE kept(id INTEGER)", "CREATE SCHEMA other", "CREATE TABLE other.elsewhere(id INTEGER)"})
+	snapshot, err := inspectAs(c, featuresWithout(provider.CommonNamespacesFeature), fileAddress(path), "main")
+	c.Assert(err, qt.IsNil)
+	c.Assert(snapshot.GetTables(), qt.HasLen, 1)
+	c.Assert(snapshot.GetCommonObjects().GetNamespaces(), qt.HasLen, 0)
 }
 
 func TestInspectEmptyDatabase_UnderEveryHost(t *testing.T) {
@@ -149,32 +191,32 @@ func TestInspect_FailurePath(t *testing.T) {
 		schemas    []string
 		reason     string
 	}{
-		{"another schema in a whole read", []string{"CREATE SCHEMA other"}, readerFeatures(), nil,
-			`the database has schema "other", and the provider reads the main schema only; select main to read it alone`},
-		{"another schema selected", nil, readerFeatures(), []string{"other"},
-			`the provider reads the main schema only, and the read selects schema "other"`},
+		{"another schema for a host that reads no namespaces", []string{"CREATE SCHEMA other"}, featuresWithout(provider.CommonNamespacesFeature), nil,
+			`the read covers schema "other", which needs a host that reads schema.common-namespaces; select main to read it alone`},
 		{"a macro", []string{"CREATE MACRO add1(a) AS a + 1"}, readerFeatures(), nil,
 			`schema "main" holds macro "add1", which the provider does not read`},
+		{"a macro in another schema", []string{"CREATE SCHEMA tools", "CREATE MACRO tools.add1(a) AS a + 1"}, readerFeatures(), nil,
+			`schema "tools" holds macro "add1", which the provider does not read`},
 		{"a table for a host that reads no columns", []string{"CREATE TABLE t(a INTEGER)"}, []string{provider.ErrorReasonsFeature}, nil,
-			`table "t" needs a host that reads schema.observed-columns`},
+			`table "main"."t" needs a host that reads schema.observed-columns`},
 		{"a check for a host that reads no constraints", []string{"CREATE TABLE t(a INTEGER CHECK (a > 0))"},
 			[]string{provider.ErrorReasonsFeature, provider.ObservedColumnsFeature}, nil,
-			`table "t" needs a host that reads schema.observed-constraints`},
+			`table "main"."t" needs a host that reads schema.observed-constraints`},
 		{"a primary key for a host that reads no keys", []string{"CREATE TABLE t(a INTEGER PRIMARY KEY)"},
 			[]string{provider.ErrorReasonsFeature, provider.ObservedColumnsFeature}, nil,
-			`table "t" needs a host that reads schema.observed-primary-keys`},
+			`table "main"."t" needs a host that reads schema.observed-primary-keys`},
 		{"an index for a host that reads no indexes", []string{"CREATE TABLE t(a INTEGER)", "CREATE INDEX ta ON t(a)"},
 			[]string{provider.ErrorReasonsFeature, provider.ObservedColumnsFeature}, nil,
-			`table "t" needs a host that reads schema.observed-indexes`},
+			`table "main"."t" needs a host that reads schema.observed-indexes`},
 		{"a comment for a host that reads no common objects", []string{"CREATE TABLE t(a INTEGER)", "COMMENT ON TABLE t IS 'x'"},
 			[]string{provider.ErrorReasonsFeature, provider.ObservedColumnsFeature}, nil,
-			`table "t" needs a host that reads schema.common-objects`},
+			`table "main"."t" needs a host that reads schema.common-objects`},
 		{"a view for a host that reads no common objects", []string{"CREATE VIEW v AS SELECT 1 AS one"},
 			[]string{provider.ErrorReasonsFeature, provider.ObservedColumnsFeature}, nil,
-			`view "v" needs a host that reads schema.common-objects`},
+			`view "main"."v" needs a host that reads schema.common-objects`},
 		{"a sequence for a host that reads no common objects", []string{"CREATE SEQUENCE s"},
 			[]string{provider.ErrorReasonsFeature, provider.ObservedColumnsFeature}, nil,
-			`sequence "s" needs a host that reads schema.common-objects`},
+			`sequence "main"."s" needs a host that reads schema.common-objects`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

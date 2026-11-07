@@ -41,12 +41,13 @@ func TestDescription_ListsTheReadFeatures(t *testing.T) {
 	want := []string{
 		provider.InspectFeature, provider.ErrorReasonsFeature,
 		provider.ObservedColumnsFeature, provider.ObservedPrimaryKeysFeature, provider.ObservedConstraintsFeature, provider.ObservedIndexesFeature,
-		provider.NormalizeValuesFeature, provider.CommonObjectsFeature,
+		provider.NormalizeValuesFeature, provider.CommonObjectsFeature, provider.CommonNamespacesFeature,
 	}
 	c.Assert(description.GetFeatures(), qt.DeepEquals, want)
 	c.Assert(description.GetEngines()[0].GetFeatures(), qt.DeepEquals, want)
 	c.Assert(description.GetEngines()[0].GetCommonObjects().GetKinds(), qt.DeepEquals, []protocol.CommonObjectSupport_Kind{
 		protocol.CommonObjectSupport_VIEW, protocol.CommonObjectSupport_SEQUENCE, protocol.CommonObjectSupport_COMMENT,
+		protocol.CommonObjectSupport_SCHEMA,
 	})
 }
 
