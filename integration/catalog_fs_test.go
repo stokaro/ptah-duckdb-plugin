@@ -141,6 +141,8 @@ func TestRead_FailurePath(t *testing.T) {
 			`view "v" names its columns, which the provider does not read yet`},
 		{"comment on a view column", []string{"CREATE VIEW v AS SELECT 1 AS one", "COMMENT ON COLUMN v.one IS 'first'"},
 			`column "one" of view "v" has a comment, which the provider does not read`},
+		{"a column compression", []string{"CREATE TABLE t(a INTEGER USING COMPRESSION rle)"},
+			`column "a" of table "t" names a compression, which the provider does not read`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,6 +155,19 @@ func TestRead_FailurePath(t *testing.T) {
 			c.Assert(read, qt.DeepEquals, catalog.Schema{})
 		})
 	}
+}
+
+// A column's collation is read from the table's statement, which is the only
+// place DuckDB's catalog keeps it.
+func TestRead_Collation(t *testing.T) {
+	c := testcheck.New(t)
+	handle := seedMemory(c, []string{`CREATE TABLE t(a VARCHAR COLLATE nocase, "B" VARCHAR COLLATE nocase.noaccent, c VARCHAR)`})
+	read, err := catalog.Read(c.Context(), handle.Conn(), "memory", "main")
+	c.Assert(err, qt.IsNil)
+	a, b := column(c, "a", "VARCHAR", true), column(c, "B", "VARCHAR", true)
+	a.Collation, b.Collation = "nocase", "nocase.noaccent"
+	c.Assert(read.Tables, qt.HasLen, 1)
+	c.Assert(read.Tables[0].Columns, qt.DeepEquals, []catalog.Column{a, b, column(c, "c", "VARCHAR", true)})
 }
 
 // A schema a statement created holds objects as main does, and its foreign

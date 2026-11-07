@@ -1,18 +1,17 @@
 # Ptah DuckDB provider
 
 This repository holds the executable DuckDB provider for
-[Ptah #4204](https://github.com/stokaro/ptah/issues/4204). Ptah starts it as a
+[Ptah #5667](https://github.com/stokaro/ptah/issues/5667). Ptah starts it as a
 subprocess and talks to it over the provider protocol of
 `github.com/stokaro/ptah/provider-sdk`.
 
-**The provider opens and reads databases; it plans, renders and runs nothing
-yet.** It opens DuckDB database files and in-memory databases, reports the
-embedded DuckDB's version, identifier rules and capabilities, and reads the
-schemas of a database completely or refuses the read by name. Ptah
-requires rendering, execution and SQL analysis of every provider it runs, so
-a Ptah command does not use this provider yet; the SDK's client and its
-conformance suite do. The other services follow, each advertised in the
-description only when it exists.
+The provider opens DuckDB database files and in-memory databases, reads their
+schemas completely or refuses the read by name, and plans, renders and runs
+schema changes: `ptah schema apply`, `ptah migrations generate` and `ptah
+migrations lint` work through it. Running versioned migrations (`ptah
+migrations up` and `down`) needs the revision history services, which follow
+in a later change; each service is advertised in the description only when it
+exists.
 
 ## The embedded DuckDB
 
@@ -58,7 +57,8 @@ duckdb://:memory:[<name>]
 - Any other path is relative: `duckdb://app.duckdb`, `duckdb://data/app.duckdb`.
   It resolves against the provider's working directory, which is the
   directory Ptah was started in, never the directory of the provider's
-  executable.
+  executable: contract 25.30 states that the host starts the provider in its
+  own working directory.
 - `access_mode` is the only option. `read_write` is the default, and opening a
   file that does not exist creates it when its directory exists.
   `read_only` opens an existing file and creates nothing.
@@ -111,6 +111,12 @@ The provider does not lift that rule, and reports a conflict clearly:
 - Inside one provider process, every session of a file shares one instance,
   and a session that asks for the other access mode is refused by name
   (`FailedPrecondition`): DuckDB opens one file in one access mode per process.
+
+The lock Ptah takes before it applies a plan is an entry of the provider's own
+lock table, keyed by the database and the lock's name. That covers every
+writer there is: the sessions of one process share the table, and DuckDB lets
+no other process open a file one process writes. Closing a session releases
+its locks.
 
 ### Files that are not DuckDB databases
 
@@ -188,9 +194,104 @@ What a read refuses, by name:
   `schema.observed-indexes`, and a view, sequence or comment
   `schema.common-objects`.
 
-`PrepareCommonObjects`, which writes a declared view, sequence or comment in
-DuckDB's spelling for Ptah to compare, refuses every request until the
-planning services exist.
+`PrepareCommonObjects` writes a declared view's query in the spelling DuckDB
+stores it in, by parsing it and writing it back in a private in-memory
+database, and fills each declared sequence's settings with DuckDB's defaults,
+so Ptah compares a declaration with a read in the same terms.
+
+## Planning and applying
+
+`ptah schema apply` and `ptah migrations generate` work through this
+provider: Ptah reads the database, compares it with the declared schema, and
+asks the provider to plan, render and run the changes. `ptah migrations lint`
+splits migration files with the provider's SQL analysis. `ptah migrations up`
+and `down` need the revision history services, which are not implemented yet.
+
+The provider needs a host of contract 25.30 or later, which states that the
+host starts the provider in its own working directory, so a relative address
+names the same file for both.
+
+### What the provider plans
+
+The provider owns the lifecycle of DuckDB's tables. Ptah hands it every table
+a plan creates, changes or drops, and the provider plans each statement:
+
+- `CREATE TABLE` with the columns, primary key, single-column `UNIQUE`,
+  `CHECK`s and foreign keys, since DuckDB adds no `CHECK` and no foreign key to
+  a table that exists; then `CREATE INDEX` for each index.
+- On a table that exists: `ADD COLUMN`, `DROP COLUMN`, a column's type
+  (`ALTER COLUMN ... TYPE`), default (`SET DEFAULT`, `DROP DEFAULT`) and
+  nullability (`SET NOT NULL`, `DROP NOT NULL`), `ADD UNIQUE` for one column,
+  `ADD PRIMARY KEY` on a table without one, `CREATE INDEX` and `DROP INDEX`.
+- `DROP TABLE`, which drops the table's indexes. Tables of one schema that
+  reference one another are dropped in one unit, each after the tables that
+  reference it.
+- Schemas, views, sequences and comments on tables, columns, indexes, views
+  and sequences, through Ptah's common objects. A view is replaced by
+  `DROP VIEW` and `CREATE VIEW`.
+
+Every identifier is double-quoted and every table is named with its schema.
+Ptah runs a plan in one transaction: a statement DuckDB refuses aborts it,
+nothing the plan changed before it stays, and the failure names the unit and
+DuckDB's class of error, such as `a constraint error: a row breaks a
+constraint`, without quoting DuckDB's message, which can quote a value.
+
+Objects in a schema other than `main` need a host that reads
+`schema.common-namespaces`; for any other host a declaration that names
+another schema is refused, since the read could not see it afterwards.
+
+### What DuckDB keeps differently
+
+DuckDB keeps neither a declared length nor a declared constraint name. The
+plan says so, instead of failing or planning the same change on every run:
+
+- **`VARCHAR(n)`.** DuckDB accepts a length and keeps none: `VARCHAR(255)`,
+  `CHAR(2)` and `TEXT` are all `VARCHAR`, and `VARCHAR(5)[]` is `VARCHAR[]`.
+  The plan compares the declaration as DuckDB holds it and carries a note:
+  `DUCKDB: column "email" of table "users" is declared VARCHAR(255); DuckDB
+  keeps no length and holds it as VARCHAR, which takes text of any length.`
+  The note is printed with the plan and written into a generated migration.
+- **Constraint names.** DuckDB names every constraint itself. The plan
+  compares `CHECK`s and foreign keys by what they say, never by name, and the
+  creation carries a note that lists the declared names DuckDB will not keep.
+
+A collation is part of a column's type in DuckDB, and Ptah compares no
+collation of its own, so the provider compares the two together: a changed
+collation reaches the planner, which refuses it by name.
+
+A default that draws from a sequence (`DEFAULT nextval('app.ids')`) is
+checked in a private in-memory database that creates the sequence it names
+first, so DuckDB accepts it there as it will in the database.
+
+### What DuckDB refuses, refused by name
+
+DuckDB refuses many changes of a table that exists. The provider refuses each
+one before a statement is sent, with a reason that names the table and the
+column, and never plans it as a removal and a new creation, which would lose
+the table's rows. Measured on the embedded DuckDB:
+
+| Change | Refused when |
+| --- | --- |
+| A column's type, nullability or `UNIQUE`, a dropped column, an added `NOT NULL` or `UNIQUE` column | The table keeps an index, or a foreign key of another table references it. A plan may drop the index in the same change, except as below. A default and a plain added column change either way. |
+| A column's type or a dropped column, in the change that drops an index | The index covers the column, or the dropped column comes before a column it covers: DuckDB keeps a dropped index until the transaction commits. Drop the index in a change of its own first. |
+| A column's type | The column is in the primary key, a `UNIQUE`, a `CHECK` or a foreign key. |
+| A dropped column | The column is in the primary key, a `UNIQUE` or a foreign key, or a key or `UNIQUE` column comes after it. |
+| A `CHECK` or foreign key added or dropped, a `UNIQUE` dropped, the primary key changed or dropped | Always: DuckDB has no statement for it. |
+| A generated column added, a generated expression or a collation changed | Always. |
+| A dropped table | A table the plan keeps references it. |
+| A structural change of a table, a dropped table that references it and a created table that references it, in one plan | Always: Ptah creates every table before it drops any. Make the change and the new table in two plans. |
+| Two created tables that reference each other | Always: DuckDB creates a foreign key only to a table that exists. |
+| A sequence changed | Always: DuckDB alters no sequence, and replacing it would restart its counter. |
+
+A declaration DuckDB cannot hold is refused when Ptah validates the schema,
+before any planning: auto-increment and identity columns (declare a sequence
+and `DEFAULT nextval('...')`), `STORED` generated columns, constraints that are
+not enforced, a `UNIQUE` over an expression or over several columns (declare a
+unique index instead), foreign key rules other than `NO ACTION` and
+`RESTRICT`, deferrable keys, `MATCH`, keys into another schema, partial
+indexes, index methods other than ART, operator classes, `INCLUDE`, key order
+and `NULLS` placement, invisible indexes, triggers, table collations, storage
+engines, materialized views, `WITH CHECK OPTION`, roles and grants.
 
 ## Extensions and file access
 
@@ -242,33 +343,44 @@ provider yet, or unavailable on the embedded DuckDB, with its evidence.
 | Constraint names | Unsupported by the engine: DuckDB names constraints itself | `TestRead_RichSchema`, `TestRead_FailurePath` |
 | `VARCHAR(n)` length, index key order, foreign key rules other than `NO ACTION` | Unsupported by the engine | measured; see Inspection |
 | Partial indexes, `STORED` generated columns, schema comments, foreign keys into another schema | Unsupported by the engine | measured |
-| Conformance suite (offline, sessions, inspection) | Passes | `TestConformance` |
-| Preparing declared views and sequences, rendering, planning, execution, history, locks, dev databases | Not implemented yet | |
-| Release lines | Not declared | the contract requires an image for a tested line; see below |
+| Conformance suite (offline, sessions, inspection, transactions) | Passes, except `live.locks`; see the contract gaps | `TestConformance` |
+| Planning, rendering and running table changes, with each refusal by name | Supported | `integration/host_apply_e2e_test.go`, `integration/host_refusals_e2e_test.go` |
+| Views, sequences, comments and schemas in a plan | Supported | `TestHostManagesCommonObjects`, `TestHostManagesAnotherSchema` |
+| `ptah migrations generate` and `ptah migrations lint` | Supported | `integration/host_migrations_e2e_test.go` |
+| Transactions: a refused statement leaves nothing applied | Supported | `TestHostRollsBackAPlanDuckDBRefuses`, `TestConformance` (`live.transactions`) |
+| Locks | Supported for the sessions of one process; another process cannot open the file | `TestLocks` |
+| Revision history, migration log and tags (`ptah migrations up`, `down`), dev databases | Not implemented yet | |
+| Release line `2.0` | Certified by the linked library, `2.0.0` (`engine.linked-release-lines`) | `TestDescription_DeclaresTheLinkedReleaseLine` |
 | Network, MotherDuck, DuckLake, Quack | Out of scope | embedded file mode only |
 
 ## Contract gaps
 
-These are generic omissions of the provider contract, recorded here and not
-worked around:
+These are generic omissions of the provider contract or of Ptah, recorded here
+and not worked around:
 
-- **Working directory.** `OpenRequest` carries no invocation directory. The
-  provider resolves a relative path against its own working directory, which
-  is the host's because the SDK's bootstrap starts the process without setting
-  one. Nothing in the contract states that, so a host that started providers
-  elsewhere would move every relative DuckDB path without either side
-  noticing.
 - **UNIQUE over several columns.** An observed table carries a primary key,
   FOREIGN KEY and CHECK constraints and indexes, and a single-column UNIQUE as
   a column flag. A UNIQUE constraint over several columns has no field: it is
   not an index, and `Table.constraints` takes FOREIGN KEY and CHECK only. The
   read refuses such a table rather than report it as an index or leave the
-  constraint out.
-- **Release lines of an embedded engine.** A release line may claim
-  `CERTIFIED` or `LEGACY_TESTED` only with an `image`, and an embedded engine
-  has none: the provider embeds one DuckDB, which every test runs against, yet
-  could declare it only as `BEST_EFFORT`. The provider declares no line until
-  the contract can say "embedded, tested".
+  constraint out, and a declaration of one is refused.
+- **Table ownership needs a table setting.** Ptah assigns a table to the
+  planning service that owns one of the table's settings. DuckDB's tables have
+  none of their own, so the provider declares a desired and an observed model,
+  `table-lifecycle`, no value of which exists, only to own their lifecycle.
+- **No collation aspect.** A column comparison asks for type, default,
+  nullability and sequence only. The provider compares a collation as part of
+  the type, which is how DuckDB writes one.
+- **Removal order of related tables.** Ptah orders the removals of tables by
+  the declared schema's dependencies, which never name a removed table, and
+  keeps them in a sequence of its own. An order between separate removal steps
+  can contradict that sequence, so the provider drops related tables of one
+  schema in one unit.
+- **The conformance suite's lock check.** `live.locks` opens the database from
+  a second process to take the lock against the first. DuckDB lets no second
+  process open a file one process writes, which is the exclusion the lock
+  exists for, so the check fails at the open. `TestConformance` holds that
+  exact failure; `TestLocks` covers the sessions of one process.
 
 ## Platforms
 
@@ -322,6 +434,18 @@ as a subprocess, so they need no database server or container. They include
 the SDK's conformance suite, which checks the executable as a strict host.
 `PTAH_DUCKDB_PROVIDER_BIN` names a built executable for the end-to-end tests to
 start instead of building one with the race detector.
+
+The host-driven tests (`TestHost...`) run Ptah's own binary with this provider
+selected, and skip without one. `PTAH_HOST_TEST_BIN` names it:
+
+```sh
+(cd ../ptah && GOWORK=off go build -o /tmp/ptah ./cmd/ptah)
+PTAH_HOST_TEST_BIN=/tmp/ptah GOWORK=off go test -tags integration ./integration -run '^TestHost'
+```
+
+CI builds Ptah's master, and the newest release once one speaks the
+provider's minimum contract, and fails a leg in which a host-driven test
+skipped.
 
 `make lint` holds the provider to Ptah's lint contract: qtlint, nolintguard and
 golangci-lint over both build contours, and the declarative-test baseline. CI

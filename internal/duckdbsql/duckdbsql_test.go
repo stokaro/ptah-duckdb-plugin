@@ -96,3 +96,39 @@ func TestParseViewColumns_FailurePath(t *testing.T) {
 	c.Assert(err, qt.ErrorIs, duckdbsql.ErrViewColumns)
 	c.Assert(got, qt.Equals, "")
 }
+
+// The statements are spelled as DuckDB v2.0.0's catalog keeps a table's.
+func TestParseTableColumns_HappyPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		statement string
+		want      map[string]duckdbsql.ColumnClauses
+	}{
+		{"plain columns", "CREATE TABLE t(a INTEGER, b VARCHAR);", map[string]duckdbsql.ColumnClauses{"a": {}, "b": {}}},
+		{"a collation", `CREATE TABLE s.t(a VARCHAR COLLATE nocase, "B b" VARCHAR COLLATE nocase.noaccent DEFAULT('x'));`,
+			map[string]duckdbsql.ColumnClauses{"a": {Collation: "nocase"}, "B b": {Collation: "nocase.noaccent"}}},
+		{"a compression", "CREATE TABLE t(a INTEGER USING COMPRESSION rle)", map[string]duckdbsql.ColumnClauses{"a": {Compression: true}}},
+		{"table constraints and a word in a default", "CREATE TABLE t(a VARCHAR DEFAULT('COLLATE'), PRIMARY KEY(a), CHECK((a <> 'x')), " +
+			"CONSTRAINT c UNIQUE(a), FOREIGN KEY (a) REFERENCES p(a));", map[string]duckdbsql.ColumnClauses{"a": {}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testcheck.New(t)
+			got, err := duckdbsql.ParseTableColumns(tc.statement)
+			c.Assert(err, qt.IsNil)
+			c.Assert(got, qt.DeepEquals, tc.want)
+		})
+	}
+}
+
+func TestParseTableColumns_FailurePath(t *testing.T) {
+	statements := []string{"", "CREATE VIEW v AS SELECT 1;", "CREATE TABLE t;", "CREATE TABLE t(a INTEGER", "CREATE TABLE t(a INTEGER) WITH x;", "CREATE TABLE t('a' INTEGER);"}
+	for _, statement := range statements {
+		t.Run(statement, func(t *testing.T) {
+			c := testcheck.New(t)
+			got, err := duckdbsql.ParseTableColumns(statement)
+			c.Assert(err, qt.ErrorIs, duckdbsql.ErrShape)
+			c.Assert(got, qt.IsNil)
+		})
+	}
+}

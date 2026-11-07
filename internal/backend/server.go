@@ -11,7 +11,18 @@ func Server() runtime.Server {
 		Description:     Description(),
 		Sessions:        duckdb,
 		Inspector:       duckdb,
+		Renderer:        duckdb,
+		Executor:        duckdb,
+		SQLAnalyzer:     duckdb,
 		ValueNormalizer: duckdb,
 		CommonObjects:   duckdb,
+		SchemaValidator: duckdb,
+		TablePreparer:   duckdb,
+		TableCreations:  duckdb,
+		Columns:         duckdb,
+		FeaturePlanner:  duckdb,
+		Locks:           duckdb,
+		Transactions:    duckdb,
+		CheckComparer:   duckdb,
 	}
 }

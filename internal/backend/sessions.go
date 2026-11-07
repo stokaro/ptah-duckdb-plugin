@@ -103,6 +103,10 @@ func (p *Provider) Close(_ context.Context, request *protocol.CloseRequest) erro
 	}
 	found.mu.Lock()
 	defer found.mu.Unlock()
+	found.rollbackTransactions()
+	p.lockMu.Lock()
+	p.releaseLocks(found)
+	p.lockMu.Unlock()
 	if found.handle.Close() != nil {
 		return providerruntime.ErrorWithReason(codes.Internal, "the session did not close cleanly")
 	}

@@ -45,12 +45,16 @@ func TestClose_AnUnknownSessionSucceeds(t *testing.T) {
 	c.Assert(backend.New().Close(context.Background(), &protocol.CloseRequest{SessionId: "never-opened"}), qt.IsNil)
 }
 
-func TestPrepareCommonObjects_FailurePath(t *testing.T) {
+// A declaration without views needs no scratch database; the integration
+// tests prepare views.
+func TestPrepareCommonObjects_HappyPath(t *testing.T) {
 	c := testcheck.New(t)
-	prepared, err := backend.New().PrepareCommonObjects(context.Background(), &protocol.PrepareCommonObjectsRequest{Engine: "duckdb"})
-	c.Assert(status.Code(err), qt.Equals, codes.FailedPrecondition)
-	c.Assert(status.Convert(err).Message(), qt.Equals, "the provider does not prepare declared views, sequences or comments yet")
-	c.Assert(prepared, qt.IsNil)
+	prepared, err := backend.New().PrepareCommonObjects(context.Background(), &protocol.PrepareCommonObjectsRequest{Engine: "duckdb",
+		Declared: &protocol.DeclaredCommonObjects{Sequences: []*protocol.SQLSequence{{Name: "s"}}}})
+	c.Assert(err, qt.IsNil)
+	c.Assert(prepared.GetComplete(), qt.IsTrue)
+	c.Assert(prepared.GetPrepared().GetSequences(), qt.HasLen, 1)
+	c.Assert(prepared.GetPrepared().GetSequences()[0].GetStart(), qt.Equals, int64(1))
 }
 
 func TestNormalizeValues_HappyPath(t *testing.T) {

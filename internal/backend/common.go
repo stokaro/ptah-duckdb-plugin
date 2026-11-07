@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"slices"
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
@@ -11,22 +12,15 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/catalog"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/commonobject"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/scratch"
 )
-
-// sequenceType is the type of every DuckDB sequence: CREATE SEQUENCE takes
-// no AS clause, and a sequence counts in 64-bit integers.
-const sequenceType = "BIGINT"
 
 // commonObjectKinds are the kinds beyond tables the duckdb engine carries:
 // views, sequences, schemas, and the comments of tables, columns, indexes,
 // views and sequences. DuckDB has no role, grant or materialized view, and
 // refuses a comment on a schema.
-func commonObjectKinds() []protocol.CommonObjectSupport_Kind {
-	return []protocol.CommonObjectSupport_Kind{
-		protocol.CommonObjectSupport_VIEW, protocol.CommonObjectSupport_SEQUENCE, protocol.CommonObjectSupport_COMMENT,
-		protocol.CommonObjectSupport_SCHEMA,
-	}
-}
+func commonObjectKinds() []protocol.CommonObjectSupport_Kind { return commonobject.Kinds() }
 
 // observedCommonObjects is what a read found beyond tables in the schemas it
 // covers: every view and sequence, one comment for each object that has one,
@@ -63,7 +57,7 @@ func observedCommonObjects(database string, reads []catalog.Schema, kinds []prot
 		}
 		for _, sequence := range read.Sequences {
 			result.Sequences = append(result.Sequences, &protocol.ObservedSequence{
-				Identity: reference(database, read.Name, "sequence", sequence.Name), DataType: sequenceType,
+				Identity: reference(database, read.Name, "sequence", sequence.Name), DataType: commonobject.SequenceType,
 				Start: new(sequence.Start), Increment: new(sequence.Increment), MinValue: new(sequence.Min), MaxValue: new(sequence.Max), Cycle: sequence.Cycle,
 			})
 			comment(reference(database, read.Name, "sequence", sequence.Name), sequence.Comment)
@@ -80,13 +74,26 @@ func member(database, schema, kind, table, name string) *protocol.Reference {
 	return member
 }
 
-// PrepareCommonObjects refuses every declaration: the provider reads views,
-// sequences and comments, and does not yet write a declared one in DuckDB's
-// spelling, which the host compares with what a read reports. The SDK
-// requires the service beside the common-object wire.
-func (*Provider) PrepareCommonObjects(ctx context.Context, _ *protocol.PrepareCommonObjectsRequest) (*protocol.PreparedCommonObjects, error) {
+// PrepareCommonObjects writes a declaration in DuckDB's spelling: each view's
+// query as DuckDB stores it, which the scratch database answers by parsing
+// the query and writing it back, and each sequence with DuckDB's defaults
+// for what it leaves out. A query DuckDB cannot parse is refused by name.
+func (p *Provider) PrepareCommonObjects(ctx context.Context, request *protocol.PrepareCommonObjectsRequest) (*protocol.PreparedCommonObjects, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	return nil, providerruntime.ErrorWithReason(codes.FailedPrecondition, "the provider does not prepare declared views, sequences or comments yet")
+	prepared, err := commonobject.Prepare(ctx, request.GetDeclared(), func(ctx context.Context, query string) (string, error) {
+		written, err := p.scratch.Query(ctx, query)
+		if errors.Is(err, scratch.ErrRefused) {
+			return "", errors.New("DuckDB cannot parse its query as one SELECT")
+		}
+		return written, err
+	})
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, status.FromContextError(ctx.Err()).Err()
+		}
+		return nil, providerruntime.ErrorWithReason(codes.InvalidArgument, err.Error())
+	}
+	return &protocol.PreparedCommonObjects{Complete: true, Prepared: prepared}, nil
 }

@@ -15,21 +15,23 @@ import (
 // columns, constraints and indexes.
 func readTables(ctx context.Context, conn Querier, database, schema string) ([]Table, error) {
 	rows, err := conn.QueryContext(ctx,
-		"SELECT table_name, comment FROM duckdb_tables() WHERE database_name = $1 AND schema_name = $2 AND NOT internal AND NOT temporary "+
+		"SELECT table_name, comment, sql FROM duckdb_tables() WHERE database_name = $1 AND schema_name = $2 AND NOT internal AND NOT temporary "+
 			"ORDER BY table_name", database, schema)
 	if err != nil {
 		return nil, err
 	}
 	var tables []Table
+	var statements []sql.NullString
 	for rows.Next() {
 		var table Table
-		var comment sql.NullString
-		if err := rows.Scan(&table.Name, &comment); err != nil {
+		var comment, statement sql.NullString
+		if err := rows.Scan(&table.Name, &comment, &statement); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
 		table.Comment = text(comment)
 		tables = append(tables, table)
+		statements = append(statements, statement)
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err
@@ -39,7 +41,36 @@ func readTables(ctx context.Context, conn Querier, database, schema string) ([]T
 			return nil, err
 		}
 	}
+	for i := range tables {
+		if err := readClauses(&tables[i], statements[i]); err != nil {
+			return nil, err
+		}
+	}
 	return tables, nil
+}
+
+// readClauses reads from a table's CREATE statement what duckdb_columns does
+// not report: a column's collation, which it carries, and a column's
+// compression, which no observed column has a field for and is refused.
+func readClauses(table *Table, statement sql.NullString) error {
+	if !statement.Valid {
+		return unsupported("table %q reports no statement, which the provider reads its columns' collations from", table.Name)
+	}
+	clauses, err := duckdbsql.ParseTableColumns(statement.String)
+	if err != nil {
+		return unsupported("the provider cannot read the statement of table %q", table.Name)
+	}
+	for i := range table.Columns {
+		found, ok := clauses[table.Columns[i].Name]
+		if !ok {
+			return unsupported("the statement of table %q does not name its column %q", table.Name, table.Columns[i].Name)
+		}
+		if found.Compression {
+			return unsupported("column %q of table %q names a compression, which the provider does not read", table.Columns[i].Name, table.Name)
+		}
+		table.Columns[i].Collation = found.Collation
+	}
+	return nil
 }
 
 // readColumns fills the columns of tables in table order. duckdb_columns also
