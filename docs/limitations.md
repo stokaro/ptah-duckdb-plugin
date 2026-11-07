@@ -76,11 +76,14 @@ DuckDB:
 | A dropped column | The column is in the primary key, a `UNIQUE` or a foreign key, or a key or `UNIQUE` column comes after it. |
 | A `CHECK` or foreign key added or dropped, a `UNIQUE` dropped, the primary key changed or dropped | Always: DuckDB has no statement for it. |
 | A generated column added, a generated expression changed, a collation changed | Always. |
-| A renamed index | Always: DuckDB renames no index. |
 | A dropped table | A table the plan keeps references it. |
 | A structural change of a table, with a dropped table and a created table that both reference it, in one plan | Always: Ptah creates every table before it drops any. Make the change and the new table in two plans. |
 | Two created tables that reference each other | Always: DuckDB creates a foreign key only to a table that exists. |
 | A changed sequence | Always: DuckDB alters no sequence, and replacing one would restart its counter. |
+
+An index declared under another name is dropped and created under the new one:
+DuckDB renames no index, and the provider does not ask Ptah for rename steps.
+The index holds no rows, so nothing is lost.
 
 ## Migrations and dev databases
 
