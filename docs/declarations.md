@@ -175,8 +175,8 @@ DuckDB keeps no key order and no `NULLS` placement, so a key that states
 either is refused rather than dropped. A `WHERE` filter, another index method,
 an operator class, `INCLUDE`, storage parameters, `NULLS NOT DISTINCT` and an
 invisible index are refused too. An index name is unique in its schema. DuckDB
-renames no index: a renamed index is refused, and declaring the new name with
-the old one removed plans a drop and a creation.
+renames no index, and the provider does not ask Ptah for rename steps, so an
+index declared under another name is dropped and created under the new one.
 
 ## Views, sequences, schemas and comments
 
