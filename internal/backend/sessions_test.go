@@ -44,3 +44,25 @@ func TestClose_AnUnknownSessionSucceeds(t *testing.T) {
 	c := testcheck.New(t)
 	c.Assert(backend.New().Close(context.Background(), &protocol.CloseRequest{SessionId: "never-opened"}), qt.IsNil)
 }
+
+func TestPrepareCommonObjects_FailurePath(t *testing.T) {
+	c := testcheck.New(t)
+	prepared, err := backend.New().PrepareCommonObjects(context.Background(), &protocol.PrepareCommonObjectsRequest{Engine: "duckdb"})
+	c.Assert(status.Code(err), qt.Equals, codes.FailedPrecondition)
+	c.Assert(status.Convert(err).Message(), qt.Equals, "the provider does not prepare declared views, sequences or comments yet")
+	c.Assert(prepared, qt.IsNil)
+}
+
+func TestNormalizeValues_HappyPath(t *testing.T) {
+	c := testcheck.New(t)
+	normalized, err := backend.New().NormalizeValues(context.Background(), &protocol.NormalizeValuesRequest{})
+	c.Assert(err, qt.IsNil)
+	c.Assert(normalized.GetComplete(), qt.IsTrue)
+}
+
+func TestNormalizeValues_FailurePath(t *testing.T) {
+	c := testcheck.New(t)
+	normalized, err := backend.New().NormalizeValues(context.Background(), &protocol.NormalizeValuesRequest{Values: []*protocol.ValueInput{{}}})
+	c.Assert(status.Code(err), qt.Equals, codes.InvalidArgument)
+	c.Assert(normalized, qt.IsNil)
+}

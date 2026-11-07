@@ -5,12 +5,14 @@ This repository holds the executable DuckDB provider for
 subprocess and talks to it over the provider protocol of
 `github.com/stokaro/ptah/provider-sdk`.
 
-**The provider serves sessions and no schema service yet.** It opens DuckDB
-database files and in-memory databases, reports the embedded DuckDB's version,
-identifier rules and capabilities, and closes them again. A host that
-negotiates with it finds no schema inspection, planning, rendering or
-execution to call. Those services follow, each advertised in the description
-only when it exists.
+**The provider opens and reads databases; it plans, renders and runs nothing
+yet.** It opens DuckDB database files and in-memory databases, reports the
+embedded DuckDB's version, identifier rules and capabilities, and reads the
+main schema of a database completely or refuses the read by name. Ptah
+requires rendering, execution and SQL analysis of every provider it runs, so
+a Ptah command does not use this provider yet; the SDK's client and its
+conformance suite do. The other services follow, each advertised in the
+description only when it exists.
 
 ## The embedded DuckDB
 
@@ -119,6 +121,76 @@ file it may not read, and, read-write, a file it may not write. DuckDB itself
 answers a SQLite file by loading its `sqlite` extension, which the provider
 never lets it do. A corrupt file is refused with its checksum mismatch named.
 
+## Inspection
+
+`Inspect` reads the main schema of the session's database from DuckDB's own
+catalog functions (`duckdb_tables()`, `duckdb_columns()`,
+`duckdb_constraints()`, `duckdb_indexes()`, `duckdb_views()`,
+`duckdb_sequences()`, `duckdb_types()` and `duckdb_functions()`). A read is
+complete or it fails with `FailedPrecondition` and a reason that names what
+it does not describe: a read that left an object out would make Ptah plan to
+create it.
+
+What a read carries:
+
+| Object | Read as |
+| --- | --- |
+| Table | Name and comment; temporary tables belong to a connection and are left out. |
+| Column | DuckDB's own type spelling, nullability, default expression as DuckDB stores it (`nextval('seq_id')`, `list_value(1, 2)`), the expression of a generated column (DuckDB's are all `VIRTUAL`), comment. A `DECIMAL` also states its precision and scale. |
+| Primary key | DuckDB's name for it and its columns in key order. |
+| `UNIQUE` on one column | The column's `unique` flag. |
+| `CHECK` | DuckDB's name for it, the columns it reads and the expression as DuckDB keeps it, `(id > 0)`. |
+| `FOREIGN KEY` | DuckDB's name, the columns, the referenced table and columns, and `NO ACTION` as both rules. |
+| Index | Name, uniqueness, comment and key parts in order: a column, or an expression as DuckDB writes it. |
+| View | Its query as DuckDB stores it, and its comment. |
+| Sequence | Start, increment, minimum, maximum, cycle, comment; the type is always `BIGINT`. |
+
+Every column type is parsed (`internal/coltype`), and a type the provider does
+not know is refused rather than read as text. The types are the ones the
+embedded DuckDB has, nested ones included: `BOOLEAN`, the signed and unsigned
+integers up to `HUGEINT` and `UHUGEINT`, `FLOAT`, `DOUBLE`, `DECIMAL(p,s)`,
+`BIGNUM`, `VARCHAR`, `JSON`, `BLOB`, `BIT`, `UUID`, `DATE`, `TIME`, `TIME_NS`,
+`TIME WITH TIME ZONE`, the `TIMESTAMP` family, `INTERVAL`, `GEOMETRY`,
+`VARIANT`, and `ENUM`, `STRUCT`, `MAP`, `UNION`, lists (`T[]`) and arrays
+(`T[N]`) of any of them.
+
+DuckDB itself decides some of what a read reports, and the read says what
+DuckDB holds:
+
+- DuckDB keeps no constraint name. It names each constraint after its table
+  and columns (`child_id_check`), whatever name the statement gave.
+- `VARCHAR(10)`, `TEXT` and `STRING` are all `VARCHAR`: DuckDB keeps no
+  length. `NUMERIC` is `DECIMAL`, `INT8` is `BIGINT`, `VARINT` is `BIGNUM`.
+- A column of a type made with `CREATE TYPE` holds the type the name stands
+  for: dropping the named type leaves the column as it was.
+- An index key keeps no order and no `NULLS` placement; DuckDB accepts `DESC`
+  and `NULLS LAST` and drops them. DuckDB refuses partial indexes.
+- DuckDB refuses `CASCADE`, `SET NULL` and `SET DEFAULT` on a foreign key and
+  a foreign key into another schema, and keeps `RESTRICT` as `NO ACTION`.
+- An empty comment and no comment are the same.
+
+What a read refuses, by name:
+
+- a schema besides `main`, in a read of the whole database (a read that
+  selects `main` reads it alone), and a selector that names another schema:
+  Ptah's contract does not carry schemas yet;
+- a macro or a type made with `CREATE TYPE`, which the provider does not model;
+- a `UNIQUE` constraint over more than one column (see the contract gaps);
+- two constraints of one table under one name, such as two `CHECK`s over the
+  same column: without names a read cannot tell them apart;
+- a view that names its columns (`CREATE VIEW v (a, b) AS ...`) and a comment
+  on a view's column;
+- an index with a method other than DuckDB's own ART index;
+- anything the host did not negotiate a way to receive: a table needs
+  `schema.observed-columns`, a primary key `schema.observed-primary-keys`, a
+  `CHECK` or foreign key `schema.observed-constraints`, an index
+  `schema.observed-indexes`, and a view, sequence or comment
+  `schema.common-objects`.
+
+`PrepareCommonObjects`, which writes a declared view, sequence or comment in
+DuckDB's spelling for Ptah to compare, refuses every request until the
+planning services exist.
+
 ## Extensions and file access
 
 A Ptah provider plugin and a DuckDB extension are different things. Building
@@ -162,8 +234,15 @@ provider yet, or unavailable on the embedded DuckDB, with its evidence.
 | Extension and file access policy | Enforced | `TestSettings_HoldOnEveryFile`, `TestPolicy_RefusesExternalAccess` |
 | `transactional_ddl`, `ddl_inside_transaction` | True | `TestSessionCapabilities_MatchTheEngine` |
 | Identifier rules: ASCII case folding, schema-wide index names | Measured | `TestIdentifierRules_MatchTheEngine` |
-| Conformance suite (offline and sessions) | Passes | `TestConformance` |
-| Schema inspection, rendering, planning, execution, history, locks, dev databases | Not implemented yet | |
+| Inspection of the main schema: tables, columns with native and nested types, defaults, generated columns, primary keys, single-column `UNIQUE`, `CHECK`, `FOREIGN KEY`, indexes, views, sequences, comments | Supported | `TestRead_RichSchema`, `TestRead_TypeInventory`, `TestInspect_RichSchema`, `TestProviderInspectsADatabaseFile` |
+| Macros, types made with `CREATE TYPE` | Refused by name; not modeled yet | `TestRead_FailurePath` |
+| `UNIQUE` over several columns | Refused by name; the contract has no field for it | `TestRead_FailurePath` |
+| Schemas besides `main` | Refused by name until the contract carries schemas | `TestInspect_FailurePath` |
+| Constraint names | Unsupported by the engine: DuckDB names constraints itself | `TestRead_RichSchema`, `TestRead_FailurePath` |
+| `VARCHAR(n)` length, index key order, foreign key rules other than `NO ACTION` | Unsupported by the engine | measured; see Inspection |
+| Partial indexes, `STORED` generated columns, schema comments | Unsupported by the engine | measured |
+| Conformance suite (offline, sessions, inspection) | Passes | `TestConformance` |
+| Preparing declared views and sequences, rendering, planning, execution, history, locks, dev databases | Not implemented yet | |
 | Release lines | Not declared | the contract requires an image for a tested line; see below |
 | Network, MotherDuck, DuckLake, Quack | Out of scope | embedded file mode only |
 
@@ -178,6 +257,12 @@ worked around:
   one. Nothing in the contract states that, so a host that started providers
   elsewhere would move every relative DuckDB path without either side
   noticing.
+- **UNIQUE over several columns.** An observed table carries a primary key,
+  FOREIGN KEY and CHECK constraints and indexes, and a single-column UNIQUE as
+  a column flag. A UNIQUE constraint over several columns has no field: it is
+  not an index, and `Table.constraints` takes FOREIGN KEY and CHECK only. The
+  read refuses such a table rather than report it as an index or leave the
+  constraint out.
 - **Release lines of an embedded engine.** A release line may claim
   `CERTIFIED` or `LEGACY_TESTED` only with an `image`, and an embedded engine
   has none: the provider embeds one DuckDB, which every test runs against, yet

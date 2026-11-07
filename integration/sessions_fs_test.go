@@ -9,6 +9,7 @@ import (
 
 	qt "github.com/frankban/quicktest"
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -37,9 +38,9 @@ func TestOpen_FileSession(t *testing.T) {
 	c.Assert(first.GetDefaultSchema(), qt.Equals, "main")
 	c.Assert(first.GetServerVersion(), qt.Equals, duckdbversion.Library)
 	c.Assert(first.GetId(), qt.Not(qt.Equals), "")
-	// No host feature is negotiated here, so the two-way errors.reasons is
-	// left out of the session's features.
-	c.Assert(first.GetFeatures(), qt.HasLen, 0)
+	// No host feature is negotiated here, so every two-way feature is left
+	// out of the session's features.
+	c.Assert(first.GetFeatures(), qt.DeepEquals, []string{provider.InspectFeature, provider.NormalizeValuesFeature})
 
 	second := openSession(c, p, fileAddress(path))
 	c.Assert(second.GetId(), qt.Not(qt.Equals), first.GetId())

@@ -59,7 +59,7 @@ func (p *Provider) Open(ctx context.Context, request *protocol.OpenRequest) (*pr
 	if p.sessions == nil {
 		p.sessions = make(map[string]*session)
 	}
-	p.sessions[id] = &session{handle: handle}
+	p.sessions[id] = &session{handle: handle, database: database}
 	return &protocol.Session{
 		Id:            id,
 		Engine:        engineID,
@@ -107,6 +107,17 @@ func (p *Provider) Close(_ context.Context, request *protocol.CloseRequest) erro
 		return providerruntime.ErrorWithReason(codes.Internal, "the session did not close cleanly")
 	}
 	return nil
+}
+
+// lookup returns the open session id names.
+func (p *Provider) lookup(id string) (*session, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	found := p.sessions[id]
+	if found == nil {
+		return nil, providerruntime.ErrorWithReason(codes.NotFound, "the session is closed or was never opened")
+	}
+	return found, nil
 }
 
 // openFailed reports a failed open. A canceled open keeps the context's

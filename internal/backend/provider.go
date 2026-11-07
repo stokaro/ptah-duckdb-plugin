@@ -6,8 +6,13 @@
 // and reports the embedded DuckDB's version, the session's identifier rules
 // and the capabilities measured on that DuckDB.
 //
-// The provider serves no schema service yet: a host that negotiates with it
-// can open and close sessions and nothing else.
+// Inspect reads the main schema of a database from DuckDB's catalog (see the
+// catalog package): tables with their columns in DuckDB's own type spelling,
+// primary keys, UNIQUE, CHECK and FOREIGN KEY constraints and indexes, and
+// views, sequences and comments. A read describes the schema completely or
+// fails with a reason that names what it does not describe.
+//
+// The provider plans, renders and runs nothing yet.
 package backend
 
 import (
@@ -57,6 +62,9 @@ type Provider struct {
 type session struct {
 	mu     sync.Mutex
 	handle *instances.Handle
+	// database is the catalog name DuckDB gives the database: the file's
+	// name without its extension, or memory.
+	database string
 }
 
 // New returns a provider with no open session.
@@ -65,8 +73,20 @@ func New() *Provider { return &Provider{} }
 // providerFeatures are the services and behaviors the provider offers.
 func providerFeatures() []string {
 	return []string{
+		provider.InspectFeature,
 		// A failed call carries a reason the provider wrote.
 		provider.ErrorReasonsFeature,
+		// A read reports each column whole, the primary key in key order,
+		// the CHECKs and foreign keys, and the indexes a table holds.
+		provider.ObservedColumnsFeature,
+		provider.ObservedPrimaryKeysFeature,
+		provider.ObservedConstraintsFeature,
+		provider.ObservedIndexesFeature,
+		// The SDK pairs the observations above with the normalization
+		// service; the provider declares no model for it.
+		provider.NormalizeValuesFeature,
+		// Views, sequences and comments travel on the common-object wire.
+		provider.CommonObjectsFeature,
 	}
 }
 
@@ -86,6 +106,7 @@ func Description() *protocol.Description {
 			Identifiers:   identifierRules(),
 			ReleaseLines:  releaseLines(),
 			Features:      providerFeatures(),
+			CommonObjects: &protocol.CommonObjectSupport{Kinds: commonObjectKinds()},
 		}},
 	}
 }
