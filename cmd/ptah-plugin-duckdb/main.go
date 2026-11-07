@@ -1,14 +1,16 @@
 // Command ptah-plugin-duckdb serves DuckDB through the experimental Ptah
-// protocol. It implements no services yet: it negotiates, declares its engine,
-// and refuses every session.
+// protocol. It embeds DuckDB through the official Go driver, which links the
+// DuckDB library with cgo, and serves sessions on database files and
+// in-memory databases. It serves no schema service yet.
 package main
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/stokaro/ptah-duckdb-plugin/internal/backend"
 	"github.com/stokaro/ptah/provider-sdk/runtime"
+
+	"github.com/stokaro/ptah-duckdb-plugin/internal/backend"
 )
 
 func main() {

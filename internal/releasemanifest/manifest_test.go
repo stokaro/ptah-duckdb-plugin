@@ -5,14 +5,15 @@ import (
 	"testing"
 
 	qt "github.com/frankban/quicktest"
+	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/backend"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/releasemanifest"
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/testcheck"
 )
 
 func TestBuild_HappyPath(t *testing.T) {
-	c := qt.New(t)
+	c := testcheck.New(t)
 	first, err := releasemanifest.Build(backend.Description())
 	c.Assert(err, qt.IsNil)
 	second, err := releasemanifest.Build(backend.Description())
@@ -27,7 +28,7 @@ func TestBuild_HappyPath(t *testing.T) {
 }
 
 func TestBuild_LeavesOutAnEngineWithoutLines(t *testing.T) {
-	c := qt.New(t)
+	c := testcheck.New(t)
 	description := &protocol.Description{ProviderId: "example.org/none", Engines: []*protocol.Engine{{Id: "none"}}}
 	out, err := releasemanifest.Build(description)
 	c.Assert(err, qt.IsNil)
