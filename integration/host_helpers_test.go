@@ -146,3 +146,14 @@ func tablesOf(c *qt.C, path string) []string {
 	c.Helper()
 	return rows(c, path, "SELECT table_name FROM duckdb_tables() WHERE schema_name = 'main' ORDER BY table_name")
 }
+
+// writeFiles writes each body into a new directory under its name and returns
+// the directory.
+func writeFiles(c *qt.C, files map[string]string) string {
+	c.Helper()
+	dir := c.TempDir()
+	for name, body := range files {
+		c.Assert(os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600), qt.IsNil)
+	}
+	return dir
+}

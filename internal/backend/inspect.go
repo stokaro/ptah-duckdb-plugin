@@ -14,6 +14,8 @@ import (
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/catalog"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/coltype"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/history"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/metadata"
 )
 
 // foreignKeyRule is the delete and update rule of every DuckDB foreign key.
@@ -54,14 +56,16 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 	if err != nil {
 		return nil, err
 	}
+	reserved := reserve(current.database, reads)
 	if err := carried(reads, engine.GetFeatures()); err != nil {
 		return nil, err
 	}
 	snapshot := &protocol.Schema{
-		Complete:       true,
-		Engine:         engineID,
-		TargetFeatures: engine.GetFeatures(),
-		Coverage:       &protocol.ModelCoverage{Representation: protocol.ValueInput_OBSERVED},
+		Complete:        true,
+		Engine:          engineID,
+		TargetFeatures:  engine.GetFeatures(),
+		Coverage:        &protocol.ModelCoverage{Representation: protocol.ValueInput_OBSERVED},
+		ReservedObjects: reserved,
 	}
 	for _, read := range reads {
 		for _, table := range read.Tables {
@@ -79,6 +83,43 @@ func (p *Provider) Inspect(ctx context.Context, request *protocol.InspectRequest
 		snapshot.ScopeBindings = append(snapshot.ScopeBindings, binding)
 	}
 	return snapshot, nil
+}
+
+// reserve takes the provider's own tables out of reads and returns them as
+// reserved objects: the revision table, the migration log and the tag table
+// of Ptah's migrator, each told from a user's table by the provider's mark
+// and its exact layout (see ownedtable), whatever its name. A plan never
+// manages them, so it never drops the record of the migrations a database
+// ran.
+func reserve(database string, reads []catalog.Schema) []*protocol.ReservedObject {
+	var reserved []*protocol.ReservedObject
+	for i := range reads {
+		reads[i].Tables = slices.DeleteFunc(reads[i].Tables, func(table catalog.Table) bool {
+			purpose := reservedPurpose(reads[i].Name, table)
+			if purpose == protocol.ReservedObject_PURPOSE_UNSPECIFIED {
+				return false
+			}
+			reserved = append(reserved, &protocol.ReservedObject{Object: reference(database, reads[i].Name, "table", table.Name),
+				NormalizedObject: normalizedReference(database, reads[i].Name, "table", table.Name), Purpose: purpose,
+				ConflictKinds: []string{"table"}})
+			return true
+		})
+	}
+	return reserved
+}
+
+// reservedPurpose is what the provider keeps in a table, or no purpose for a
+// user's table.
+func reservedPurpose(schema string, table catalog.Table) protocol.ReservedObject_Purpose {
+	switch {
+	case history.Native(schema, table.Name).Holds(table), history.Atlas(schema, table.Name).Holds(table):
+		return protocol.ReservedObject_HISTORY
+	case metadata.Log(schema, table.Name).Holds(table):
+		return protocol.ReservedObject_LOG
+	case metadata.Tags(schema, table.Name).Holds(table):
+		return protocol.ReservedObject_TAG
+	}
+	return protocol.ReservedObject_PURPOSE_UNSPECIFIED
 }
 
 // selected is the schemas among schemas the selectors name, compared without

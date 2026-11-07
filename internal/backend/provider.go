@@ -21,6 +21,12 @@
 // writes a plan's statements, Execute runs them in the host's transaction,
 // and AnalyzeSQL splits migration files as DuckDB reads them (see the sqltext
 // package).
+//
+// The provider keeps the records of Ptah's migrator, its revisions, run log
+// and tags, in tables it marks as its own (see the history, metadata and
+// ownedtable packages), splits a migration body into its statements (see
+// migrationunits), and provisions, cleans and guards dev databases (see
+// devclean).
 package backend
 
 import (
@@ -76,6 +82,10 @@ type Provider struct {
 	// name; see locks.go. lockMu guards them.
 	lockMu sync.Mutex
 	locks  map[lockKey]heldLock
+	// devDirs are the directories of the dev databases the provider
+	// created, by lease; see devdb.go. devMu guards them.
+	devMu   sync.Mutex
+	devDirs map[string]string
 }
 
 // session is one open session: a connection of its own to a database the
@@ -94,6 +104,9 @@ type session struct {
 	// the one whose transaction is open; see transactions.go. mu guards them.
 	transactions map[string]*transaction
 	active       string
+	// readers are the session's metadata snapshots by reader ID; see
+	// metadata.go. mu guards them.
+	readers map[string]*reader
 }
 
 // New returns a provider with no open session.
@@ -131,6 +144,21 @@ func providerFeatures() []string {
 		// a transaction; see locks.go and transactions.go.
 		provider.LocksFeature,
 		provider.TransactionsFeature,
+		// Ptah's migrator keeps its revision records, its run log and its
+		// tags in tables the provider marks as its own; see history.go and
+		// metadata.go.
+		provider.HistoryFeature,
+		provider.MetadataFeature,
+		// The provider splits a migration body into its statements, each of
+		// which runs in a transaction with its checkpoint, so a migration
+		// runs without a transaction of its own too; see split.go.
+		provider.MigrationSplitFeature,
+		// `--dev-url docker://duckdb` provisions a database file in a
+		// temporary directory, and the host cleans a dev database and
+		// guards a replay into it; see devdb.go and devclean.go.
+		provider.DevDatabaseFeature,
+		provider.DevCleanupFeature,
+		provider.ReplayGuardFeature,
 		// A read reports each column whole, the primary key in key order,
 		// the CHECKs and foreign keys, and the indexes a table holds.
 		provider.ObservedColumnsFeature,

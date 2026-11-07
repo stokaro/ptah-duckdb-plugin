@@ -6,12 +6,11 @@ subprocess and talks to it over the provider protocol of
 `github.com/stokaro/ptah/provider-sdk`.
 
 The provider opens DuckDB database files and in-memory databases, reads their
-schemas completely or refuses the read by name, and plans, renders and runs
-schema changes: `ptah schema apply`, `ptah migrations generate` and `ptah
-migrations lint` work through it. Running versioned migrations (`ptah
-migrations up` and `down`) needs the revision history services, which follow
-in a later change; each service is advertised in the description only when it
-exists.
+schemas completely or refuses the read by name, plans, renders and runs
+schema changes, and keeps the records of Ptah's migrator: `ptah schema
+apply`, `ptah migrations generate`, `up`, `down`, `status`, `tag`, `log` and
+`lint` work through it, with a dev database where a command takes one. Each
+service is advertised in the description only when it exists.
 
 ## The embedded DuckDB
 
@@ -204,8 +203,8 @@ so Ptah compares a declaration with a read in the same terms.
 `ptah schema apply` and `ptah migrations generate` work through this
 provider: Ptah reads the database, compares it with the declared schema, and
 asks the provider to plan, render and run the changes. `ptah migrations lint`
-splits migration files with the provider's SQL analysis. `ptah migrations up`
-and `down` need the revision history services, which are not implemented yet.
+splits migration files with the provider's SQL analysis. Versioned migrations
+are described under [Migrations](#migrations).
 
 The provider needs a host of contract 25.30 or later, which states that the
 host starts the provider in its own working directory, so a relative address
@@ -293,6 +292,62 @@ indexes, index methods other than ART, operator classes, `INCLUDE`, key order
 and `NULLS` placement, invisible indexes, triggers, table collations, storage
 engines, materialized views, `WITH CHECK OPTION`, roles and grants.
 
+## Migrations
+
+`ptah migrations up`, `down`, `status`, `tag` and `log` run through the
+provider, which keeps the migrator's records in three tables of the database:
+the revision table (`schema_migrations`, or `atlas_schema_revisions` with
+`--revision-format atlas`), the run log (`schema_migrations_log`) and the tags
+(`ptah_migration_tags`), under the names and in the schema the command
+selects.
+
+| Table | Columns |
+| --- | --- |
+| Native revision table | `version BIGINT` key, `description`, `applied_at TIMESTAMPTZ`, `state` (`applied`, `pending` or `failed`, with `:down` for a rollback), `applied`, `total`, `error`, `error_stmt`, `execution_time_ms`, `checksum` |
+| Atlas revision table | `version VARCHAR` key, `description`, `type`, `applied`, `total`, `executed_at TIMESTAMPTZ`, `execution_time` in nanoseconds, `error`, `error_stmt`, `hash`, `partial_hashes VARCHAR[]`, `operator_version` |
+| Run log | `run_id` and `seq` as the key, `operation`, `version`, `state`, `actor`, `actor_source`, `checksum`, `logged_at TIMESTAMPTZ`, `error` |
+| Tags | `tag` key, `version`, `recorded_at TIMESTAMPTZ` |
+
+A timestamp is kept to the microsecond and the native run time to the
+millisecond. The provider creates each table with a comment that marks it as
+its own, and reads and writes a table of a store's name only when it carries
+that mark and exactly its columns, key and nothing else. A table of that name
+without the mark is the user's, and the provider refuses it rather than adopt
+it. A read leaves the marked tables out of the schema it reports and names
+them as reserved, so `schema apply` and `migrations generate` never plan to
+drop them.
+
+Each migration runs in the transaction mode the command selects. The provider
+splits a body into its statements (`units.migration-split`), and DuckDB runs
+every statement in a transaction, schema statements included: under `--tx-mode
+file` a failed migration leaves nothing of itself, under `all` nothing of the
+run, and under `none` each statement commits with its checkpoint, so a failed
+migration stops after the last statement that committed and a rerun resumes
+there. A body that controls a transaction or changes a setting (`BEGIN`,
+`COMMIT`, `SET`, `PRAGMA`, `USE`) is refused before anything runs.
+
+### Dev databases
+
+A command that takes `--dev-url` accepts three forms:
+
+- `docker://duckdb`, or `docker://duckdb/2.0` for the linked line: the
+  provider creates a database file in a directory of its own under the
+  system's temporary directory and removes the directory when the command
+  releases it. DuckDB runs inside the provider, so nothing starts a container.
+  Another version is refused: the provider links one DuckDB.
+- the address of a database file, which must be empty: Ptah checks that it
+  holds no object before it uses it, and empties it afterwards.
+- `duckdb://:memory:`, the provider process's in-memory database, which ends
+  with the command.
+
+The cleanup removes every schema but `main` with what it holds, and the views,
+macros, tables, sequences and types of `main`, in one transaction, so it
+removes everything or nothing. Before a replay, Ptah asks the provider whether
+each statement stays inside the dev database. The provider refuses a statement
+that reaches beyond it or into the session: a temporary object, a setting, a
+transaction or prepared statement, `ATTACH`, an extension, a secret, a file
+(`COPY`, `EXPORT`), and a name in the `temp` or `system` catalog.
+
 ## Extensions and file access
 
 A Ptah provider plugin and a DuckDB extension are different things. Building
@@ -349,7 +404,10 @@ provider yet, or unavailable on the embedded DuckDB, with its evidence.
 | `ptah migrations generate` and `ptah migrations lint` | Supported | `integration/host_migrations_e2e_test.go` |
 | Transactions: a refused statement leaves nothing applied | Supported | `TestHostRollsBackAPlanDuckDBRefuses`, `TestConformance` (`live.transactions`) |
 | Locks | Supported for the sessions of one process; another process cannot open the file | `TestLocks` |
-| Revision history, migration log and tags (`ptah migrations up`, `down`), dev databases | Not implemented yet | |
+| Revision history, run log and tags (`ptah migrations up`, `down`, `status`, `tag`, `log`), native and Atlas layouts | Supported | `TestHostRunsMigrationsUpAndDown`, `integration/history_fs_test.go`, `integration/metadata_fs_test.go` |
+| Transaction modes `file`, `none` and `all` | Supported | `TestHostRunsMigrationsInEachTransactionMode` |
+| The provider's tables reserved in a read | Supported | `TestInspect_ReservesTheProvidersTables` |
+| Dev databases: provisioned, named, cleaned, replay guard | Supported | `TestHostUsesADevDatabase`, `integration/devclean_fs_test.go` |
 | Release line `2.0` | Certified by the linked library, `2.0.0` (`engine.linked-release-lines`) | `TestDescription_DeclaresTheLinkedReleaseLine` |
 | Network, MotherDuck, DuckLake, Quack | Out of scope | embedded file mode only |
 
@@ -376,6 +434,11 @@ and not worked around:
   keeps them in a sequence of its own. An order between separate removal steps
   can contradict that sequence, so the provider drops related tables of one
   schema in one unit.
+- **Named in-memory databases as a URL.** Ptah parses `--db-url` and
+  `--dev-url` as URLs before the provider sees them, and
+  `duckdb://:memory:<name>` is not one: Go's parser reads the name as a port.
+  `duckdb://:memory:` passes. The provider provisions a dev database as a file
+  for the same reason.
 - **The conformance suite's lock check.** `live.locks` opens the database from
   a second process to take the lock against the first. DuckDB lets no second
   process open a file one process writes, which is the exclusion the lock
