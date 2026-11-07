@@ -5,11 +5,19 @@ on:
   pull_request:
 permissions:
   contents: read
+# A pull request's push supersedes its earlier run, so that run is canceled.
+# A push to master gets a group of its own.
+concurrency:
+  group: provider-checks-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       GOWORK: 'off'
+      # The DuckDB driver links its library through cgo; a build without it
+      # fails to compile.
+      CGO_ENABLED: '1'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -19,14 +27,108 @@ jobs:
       - run: sh scripts/check-module-boundaries.sh
       - run: go test -race ./...
       - run: go vet ./...
-      - run: CGO_ENABLED=0 go build -o bin/ptah-plugin-duckdb ./cmd/ptah-plugin-duckdb
-  windows-unit:
-    runs-on: windows-latest
+      - run: go vet -tags integration ./...
+      - run: go build -o bin/ptah-plugin-duckdb ./cmd/ptah-plugin-duckdb
+  # The integration tests open DuckDB in the test process and start the
+  # provider as a subprocess, so they need no service. They run on every
+  # platform the driver links a prebuilt DuckDB library for, which is every
+  # platform a release ships (internal/releasemanifest.Platforms). The race
+  # detector runs where the toolchain supports it with the runner's C
+  # compiler; on Windows the tests run without it.
+  platforms:
+    name: platform (${{ matrix.os }}/${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64, runner: ubuntu-22.04, race: '-race' }
+          - { os: linux, arch: arm64, runner: ubuntu-22.04-arm, race: '-race' }
+          - { os: darwin, arch: arm64, runner: macos-15, race: '-race' }
+          - { os: darwin, arch: amd64, runner: macos-15-intel, race: '-race' }
+          - { os: windows, arch: amd64, runner: windows-2025, race: '' }
     env:
       GOWORK: 'off'
+      CGO_ENABLED: '1'
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: go test ./...
+      - name: Unit tests
+        run: go test ${{ matrix.race }} ./...
+      - name: Integration tests
+        run: go test ${{ matrix.race }} -tags integration ./integration -count=1 -v -timeout 30m
+  # The host's lint contract: qtlint, nolintguard and golangci-lint over both
+  # build contours, and the declarative-test baseline. A file behind the
+  # integration tag is outside the default build, so only the second run of
+  # each linter reads the integration tests. The golangci-lint version is the
+  # one Ptah's own lint job pins; the other tools are pinned in go.mod.
+  lint:
+    runs-on: ubuntu-24.04
+    env:
+      GOWORK: 'off'
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: qtlint
+        run: make lint-qtlint
+      - name: nolintguard
+        run: make lint-nolintguard
+      - name: Test style baseline
+        run: make lint-teststyle
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          args: --timeout=30m
+          version: v2.15.0
+      - name: Lint (integration contour)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          args: --timeout=30m --build-tags=integration
+          version: v2.15.0
+  # .golangci.yml keeps the host's lint contract, which
+  # internal/cmd/lintcontract compares. The release leg reads the newest Ptah
+  # release this provider runs on and blocks. The master leg reads Ptah's
+  # master to show a change of the host's contract early; it does not block,
+  # because the provider follows a host change in a change of its own.
+  lint-contract:
+    name: lint contract (${{ matrix.host }})
+    runs-on: ubuntu-24.04
+    continue-on-error: ${{ matrix.host == 'master' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [release, master]
+    env:
+      GOWORK: 'off'
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Resolve the host
+        id: host
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOST: ${{ matrix.host }}
+        run: scripts/resolve-host.sh "$HOST"
+      - name: Check out the host's lint configuration
+        if: steps.host.outputs.skip != 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: stokaro/ptah
+          ref: ${{ steps.host.outputs.ref }}
+          path: .host-contract
+          sparse-checkout: .golangci.yml
+          sparse-checkout-cone-mode: false
+      - name: Compare with the host's lint contract
+        if: steps.host.outputs.skip != 'true'
+        run: go run ./internal/cmd/lintcontract -host .host-contract/.golangci.yml

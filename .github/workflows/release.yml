@@ -6,9 +6,12 @@ on:
       - "v*"
   pull_request:
     paths:
-      - ".goreleaser.yaml"
       - ".github/workflows/release.yml"
+      - "scripts/report-runtime-deps.sh"
       - "cmd/**"
+      - "internal/cmd/releasearchive/**"
+      - "internal/releasearchive/**"
+      - "internal/releasemanifest/**"
       - "go.mod"
       - "go.sum"
 
@@ -20,73 +23,131 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  goreleaser-check:
-    name: goreleaser-check
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+  # The provider links DuckDB through cgo, so no single runner can build every
+  # platform: each archive is built, tested and packed on a runner of its own
+  # platform. The list is internal/releasemanifest.Platforms, the platforms the
+  # DuckDB driver links a prebuilt library for; the publish job checks the two
+  # agree. A pull request builds a snapshot and publishes nothing.
+  build:
+    name: build (${{ matrix.os }}/${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64, runner: ubuntu-22.04, exe: '' }
+          - { os: linux, arch: arm64, runner: ubuntu-22.04-arm, exe: '' }
+          - { os: darwin, arch: arm64, runner: macos-15, exe: '' }
+          - { os: darwin, arch: amd64, runner: macos-15-intel, exe: '' }
+          - { os: windows, arch: amd64, runner: windows-2025, exe: '.exe' }
     env:
       GOWORK: "off"
+      CGO_ENABLED: "1"
+      # The oldest macOS the Go toolchain itself supports; without it the C
+      # parts target the runner's own macOS. Other systems ignore it.
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
-
-      - name: Check GoReleaser config
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: v2.18.3
-          args: check
-
-      - name: Build snapshot artifacts
-        uses: goreleaser/goreleaser-action@v7
-        with:
-          distribution: goreleaser
-          version: v2.18.3
-          args: release --snapshot --clean
-
-      - name: Verify the checksum file
+      - name: Name the version
+        id: version
         run: |
           set -euo pipefail
-          cd dist
-          # Six archives and the release lines document. The document is
-          # written outside dist, so it is checked from a copy.
-          test "$(wc -l < checksums.txt)" -eq 7
-          cp ../.release/release-lines.json .
-          sha256sum -c checksums.txt
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-SNAPSHOT-$(git rev-parse --short HEAD)"
+          fi
+          printf 'version=%s\nmodified=%s\n' "$version" "$(git log -1 --format=%ct)" >>"$GITHUB_OUTPUT"
+      - name: Build the provider
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/stokaro/ptah-duckdb-plugin/internal/buildversion.linked=$VERSION" \
+            -o "bin/ptah-plugin-duckdb${{ matrix.exe }}" ./cmd/ptah-plugin-duckdb
+          go version -m "bin/ptah-plugin-duckdb${{ matrix.exe }}" | grep -E 'duckdb|provider-sdk|CGO_ENABLED|GOOS|GOARCH'
+      - name: Report runtime dependencies
+        run: scripts/report-runtime-deps.sh "bin/ptah-plugin-duckdb${{ matrix.exe }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      # The end-to-end tests start the binary this job built, the one the
+      # archive carries, instead of building one with the race detector.
+      - name: Test the built provider
+        env:
+          PTAH_DUCKDB_PROVIDER_BIN: ${{ github.workspace }}/bin/ptah-plugin-duckdb${{ matrix.exe }}
+        run: go test -tags integration ./integration -run 'TestConformance|TestProvider' -count=1 -v -timeout 30m
+      - name: Pack the archive
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          MODIFIED: ${{ steps.version.outputs.modified }}
+        run: |
+          go run ./internal/cmd/releasearchive -version "$VERSION" -os "${{ matrix.os }}" -arch "${{ matrix.arch }}" \
+            -executable "bin/ptah-plugin-duckdb${{ matrix.exe }}" -out dist -modified "$MODIFIED"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: archive-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
 
-  release:
-    name: release
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
       contents: write
     env:
       GOWORK: "off"
+      CGO_ENABLED: "1"
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
           cache-dependency-path: go.sum
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+      - uses: actions/download-artifact@v8
         with:
-          distribution: goreleaser
-          version: v2.18.3
-          args: release --clean
+          pattern: archive-*
+          path: dist
+          merge-multiple: true
+      - name: Write the release documents and the checksums
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.0.0-SNAPSHOT-$(git rev-parse --short HEAD)"
+          fi
+          go run ./cmd/release-lines > dist/release-lines.json
+          go run ./cmd/provider-manifest -version "$version" > dist/ptah-provider.json
+          cd dist
+          # ptah-provider.json names exactly the archives the build jobs wrote.
+          diff <(jq -r '.artifacts[].archive' ptah-provider.json | sort) \
+            <(ls ptah-plugin-duckdb_*.tar.gz ptah-plugin-duckdb_*.zip | sort)
+          sha256sum ptah-plugin-duckdb_* release-lines.json ptah-provider.json | sort -k2 > checksums.txt
+          # Five archives and two documents.
+          test "$(wc -l < checksums.txt)" -eq 7
+          sha256sum -c checksums.txt
+          ls -l
+      - name: Publish the release
+        if: github.event_name == 'push'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd dist
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes \
+            ptah-plugin-duckdb_* release-lines.json ptah-provider.json checksums.txt
