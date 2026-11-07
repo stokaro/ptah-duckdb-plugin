@@ -59,12 +59,13 @@ func TestDescription_ListsTheFeatures(t *testing.T) {
 	want := []string{
 		provider.InspectFeature, provider.RenderFeature, provider.ExecuteFeature, provider.AnalyzeSQLFeature, provider.ErrorReasonsFeature,
 		provider.ValidateSchemaFeature, provider.PrepareTablesFeature, provider.ProjectTableCreationsFeature, provider.ColumnsFeature,
-		provider.PlanFeaturesFeature, provider.PlanningLifecycleFeature, provider.PrimaryKeyChangesFeature, provider.ConstraintChangesFeature,
-		provider.CheckEquivalenceFeature, provider.PlanningPolicyFeature, provider.PlanningStatementStyleFeature, provider.LocksFeature,
-		provider.TransactionsFeature, provider.HistoryFeature, provider.MetadataFeature, provider.MigrationSplitFeature, provider.DevDatabaseFeature,
-		provider.DevCleanupFeature, provider.ReplayGuardFeature, provider.ObservedColumnsFeature, provider.ObservedPrimaryKeysFeature, provider.ObservedConstraintsFeature,
-		provider.ObservedIndexesFeature, provider.NormalizeValuesFeature, provider.CommonObjectsFeature, provider.CommonNamespacesFeature,
-		provider.LinkedReleaseLinesFeature,
+		provider.PlanFeaturesFeature, provider.PlanningLifecycleFeature, provider.TableOwnershipFeature, provider.PrimaryKeyChangesFeature,
+		provider.ConstraintChangesFeature, provider.CheckEquivalenceFeature, provider.PlanningPolicyFeature, provider.PlanningStatementStyleFeature,
+		provider.LocksFeature, provider.TransactionsFeature, provider.HistoryFeature, provider.MetadataFeature, provider.MigrationSplitFeature,
+		provider.DevDatabaseFeature, provider.DevCleanupFeature, provider.ReplayGuardFeature, provider.ObservedColumnsFeature,
+		provider.ObservedPrimaryKeysFeature, provider.ObservedConstraintsFeature, provider.ObservedUniqueConstraintsFeature,
+		provider.ObservedIndexesFeature, provider.ColumnCollationsFeature, provider.EnumColumnsFeature, provider.NormalizeValuesFeature,
+		provider.CommonObjectsFeature, provider.CommonNamespacesFeature, provider.LinkedReleaseLinesFeature,
 	}
 	c.Assert(description.GetFeatures(), qt.DeepEquals, want)
 	c.Assert(description.GetEngines()[0].GetFeatures(), qt.DeepEquals, want)
@@ -74,26 +75,24 @@ func TestDescription_ListsTheFeatures(t *testing.T) {
 	})
 }
 
-// The planning service owns the engine's tables through the ownership kind,
-// a desired and an observed model no value of which exists, and plans them
-// as table operations.
+// The planning service owns every table of the engine without a table
+// setting model, plans them as table operations, and an enum column reaches
+// it as DuckDB's ENUM type.
 func TestDescription_DeclaresThePlanningService(t *testing.T) {
 	c := testcheck.New(t)
 	engine := backend.Description().GetEngines()[0]
 	c.Assert(engine.GetPlanning(), qt.HasLen, 1)
 	planning := engine.GetPlanning()[0]
 	c.Assert(planning.GetId(), qt.Equals, "duckdb-tables")
-	c.Assert(planning.GetParentKinds(), qt.DeepEquals, []string{"github.com/stokaro/ptah-duckdb-plugin/table-lifecycle"})
+	c.Assert(planning.GetOwnsTables(), qt.IsTrue)
+	c.Assert(planning.GetParentKinds(), qt.HasLen, 0)
 	c.Assert(planning.GetOperationKinds(), qt.DeepEquals, []string{"github.com/stokaro/ptah-duckdb-plugin/table-operation"})
 	var models []string
 	for _, model := range engine.GetValueModels() {
 		models = append(models, model.GetKind()+" "+model.GetRepresentation().String())
 	}
-	c.Assert(models, qt.DeepEquals, []string{
-		"github.com/stokaro/ptah-duckdb-plugin/table-operation OPERATION",
-		"github.com/stokaro/ptah-duckdb-plugin/table-lifecycle DESIRED",
-		"github.com/stokaro/ptah-duckdb-plugin/table-lifecycle OBSERVED",
-	})
+	c.Assert(models, qt.DeepEquals, []string{"github.com/stokaro/ptah-duckdb-plugin/table-operation OPERATION"})
+	c.Assert(engine.GetEnumColumns().GetForm(), qt.Equals, protocol.EnumColumns_VALUES_TYPE)
 }
 
 func TestDescription_NeedsTheContractItIsBuiltWith(t *testing.T) {

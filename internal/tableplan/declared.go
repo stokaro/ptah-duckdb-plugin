@@ -126,6 +126,11 @@ func CreateTable(desired *protocol.DeclaredTable, held catalog.Table) (tableop.O
 	if held.PrimaryKey != nil {
 		operation.PrimaryKey = slices.Clone(held.PrimaryKey.Columns)
 	}
+	for _, unique := range held.Uniques {
+		if len(unique.Columns) > 1 {
+			operation.Uniques = append(operation.Uniques, slices.Clone(unique.Columns))
+		}
+	}
 	for _, check := range held.Checks {
 		operation.Checks = append(operation.Checks, check.Expression)
 	}
@@ -139,10 +144,11 @@ func CreateTable(desired *protocol.DeclaredTable, held catalog.Table) (tableop.O
 
 // ScratchTable is the operation the backend creates in a scratch database
 // to learn how DuckDB holds a declared table: the declaration's columns as
-// written, with their CHECKs and UNIQUEs, its key and its table CHECKs, and
-// no foreign key, since the tables a key references need not exist there.
+// written, with their CHECKs and UNIQUEs, its key, its UNIQUEs over several
+// columns and its table CHECKs, and no foreign key, since the tables a key
+// references need not exist there.
 func ScratchTable(table *protocol.DeclaredTable) tableop.Operation {
-	operation := tableop.Operation{Action: tableop.CreateTable, PrimaryKey: PrimaryKey(table), Checks: TableChecks(table)}
+	operation := tableop.Operation{Action: tableop.CreateTable, PrimaryKey: PrimaryKey(table), Uniques: UniqueConstraints(table), Checks: TableChecks(table)}
 	unique := UniqueColumns(table)
 	for _, declared := range table.GetColumns() {
 		column := tableop.Column{Name: declared.GetName(), Type: ColumnType(table, declared), Nullable: EffectiveNullable(table, declared),
@@ -183,6 +189,19 @@ func uniqueColumns(table *protocol.DeclaredTable) []string {
 		}
 	}
 	return columns
+}
+
+// UniqueConstraints are the UNIQUE constraints over several columns a
+// declared table states, each with its columns in order, in declaration
+// order.
+func UniqueConstraints(table *protocol.DeclaredTable) [][]string {
+	var uniques [][]string
+	for _, constraint := range table.GetConstraints() {
+		if strings.EqualFold(constraint.GetType(), "UNIQUE") && len(constraint.GetColumns()) > 1 {
+			uniques = append(uniques, slices.Clone(constraint.GetColumns()))
+		}
+	}
+	return uniques
 }
 
 // UniqueColumns are the columns a declared table makes UNIQUE, on the column

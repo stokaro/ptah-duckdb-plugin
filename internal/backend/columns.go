@@ -3,9 +3,11 @@ package backend
 import (
 	"context"
 	"regexp"
+	"slices"
 	"strings"
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 	providerruntime "github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -40,7 +42,7 @@ func (p *Provider) CompareColumns(ctx context.Context, request *protocol.Compare
 			}
 			column := &protocol.ComparedColumn{Subject: proto.CloneOf(pair.GetSubject()), CurrentSubject: proto.CloneOf(pair.GetCurrentSubject())}
 			for _, aspect := range pair.GetAspects() {
-				receipt, err := compareAspect(aspect, desired, current)
+				receipt, err := compareAspect(aspect, desired, current, request.GetTargetFeatures())
 				if err != nil {
 					return nil, err
 				}
@@ -53,7 +55,11 @@ func (p *Provider) CompareColumns(ctx context.Context, request *protocol.Compare
 	return result, nil
 }
 
-func compareAspect(aspect protocol.ColumnAspect, desired *catalog.Column, current *protocol.ObservedColumn) (*protocol.ColumnAspectReceipt, error) {
+// compareAspect answers one aspect of a column pair under the target's
+// features. A target that lists schema.column-collations asks a column's
+// collation as an aspect of its own; for any other the type carries it.
+func compareAspect(aspect protocol.ColumnAspect, desired *catalog.Column, current *protocol.ObservedColumn, features []string) (*protocol.ColumnAspectReceipt, error) {
+	collations := slices.Contains(features, provider.ColumnCollationsFeature)
 	receipt := &protocol.ColumnAspectReceipt{Aspect: aspect}
 	difference := func(same bool, current, desired string) *protocol.ColumnAspectReceipt_Difference {
 		relation := protocol.ColumnDifference_CHANGED
@@ -64,11 +70,17 @@ func compareAspect(aspect protocol.ColumnAspect, desired *catalog.Column, curren
 	}
 	switch aspect {
 	case protocol.ColumnAspect_COLUMN_TYPE:
-		// DuckDB writes a collation as part of a column's type, and the host
-		// compares no collation of its own, so the type carries it: a
-		// changed collation reaches the planner, which refuses it by name.
-		held, declared := withCollation(heldColumnType(current), current.GetCollation()), withCollation(desired.Type, desired.Collation)
+		// DuckDB writes a collation as part of a column's type. A host that
+		// asks no collation compares it here, so a changed collation still
+		// reaches the planner, which refuses it by name.
+		held, declared := heldColumnType(current), desired.Type
+		if !collations {
+			held, declared = withCollation(held, current.GetCollation()), withCollation(declared, desired.Collation)
+		}
 		receipt.Receipt = difference(held == declared, held, declared)
+	case protocol.ColumnAspect_COLUMN_COLLATION:
+		// Empty is DuckDB's default collation on either side.
+		receipt.Receipt = difference(current.GetCollation() == desired.Collation, current.GetCollation(), desired.Collation)
 	case protocol.ColumnAspect_COLUMN_DEFAULT:
 		held, declared := text(current.DefaultExpression), text(desired.Default)
 		receipt.Receipt = difference((current.DefaultExpression == nil) == (desired.Default == nil) && held == declared, held, declared)
@@ -78,7 +90,7 @@ func compareAspect(aspect protocol.ColumnAspect, desired *catalog.Column, curren
 		// DuckDB has no identity column, so no sequence setting differs.
 		receipt.Receipt = &protocol.ColumnAspectReceipt_Sequence{Sequence: &protocol.ColumnSequenceDifferences{}}
 	default:
-		return nil, providerruntime.ErrorWithReason(codes.InvalidArgument, "the provider compares the type, default, nullability and sequence of a column only")
+		return nil, providerruntime.ErrorWithReason(codes.InvalidArgument, "the provider compares the type, collation, default, nullability and sequence of a column only")
 	}
 	return receipt, nil
 }

@@ -63,6 +63,9 @@ type Table struct {
 	Columns []Column
 	// PrimaryKey is the key in key order, or empty.
 	PrimaryKey []string
+	// Uniques are the table's UNIQUE constraints over several columns; one
+	// over a single column is that column's Unique.
+	Uniques [][]string
 	// Checks are the table's CHECK conditions.
 	Checks      []string
 	ForeignKeys []ForeignKey
@@ -85,6 +88,12 @@ func CreateTable(schema, name string, table Table) (string, error) {
 	}
 	if len(table.PrimaryKey) > 0 {
 		parts = append(parts, "PRIMARY KEY ("+quoteList(table.PrimaryKey)+")")
+	}
+	for _, unique := range table.Uniques {
+		if len(unique) == 0 {
+			return "", operand("a UNIQUE needs a column")
+		}
+		parts = append(parts, "UNIQUE ("+quoteList(unique)+")")
 	}
 	for _, check := range table.Checks {
 		if strings.TrimSpace(check) == "" {
@@ -190,9 +199,12 @@ func AddPrimaryKey(schema, table string, columns []string) (string, error) {
 	return alter(schema, table, "ADD PRIMARY KEY ("+quoteList(columns)+")"), nil
 }
 
-// AddUnique writes ALTER TABLE ... ADD UNIQUE for one column.
-func AddUnique(schema, table, column string) string {
-	return alter(schema, table, "ADD UNIQUE ("+Quote(column)+")")
+// AddUnique writes ALTER TABLE ... ADD UNIQUE over columns, in order.
+func AddUnique(schema, table string, columns []string) (string, error) {
+	if len(columns) == 0 {
+		return "", operand("a UNIQUE needs a column")
+	}
+	return alter(schema, table, "ADD UNIQUE ("+quoteList(columns)+")"), nil
 }
 
 // IndexPart is one key part of an index: a column, or an expression as

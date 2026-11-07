@@ -121,7 +121,8 @@ func testCommand(ctx context.Context, binary string, args ...string) *exec.Cmd {
 
 // startProvider starts the provider as a host does: by its digest, with no
 // environment of its own and in the test process's working directory. The
-// host lists errors.reasons, so a refusal carries the provider's reason.
+// host lists errors.reasons, so a refusal carries the provider's reason, and
+// planning.table-ownership, which a host must list to start the provider.
 func startProvider(c *qt.C) *providerruntime.Client {
 	c.Helper()
 	binary, digest := providerBinary(c)
@@ -129,7 +130,7 @@ func startProvider(c *qt.C) *providerruntime.Client {
 	defer cancel()
 	client, err := providerruntime.Start(ctx, providerruntime.Options{
 		Executable: binary, SHA256: digest, ProviderID: backend.ProviderID,
-		HostFeatures: []string{provider.ErrorReasonsFeature}, StartupTimeout: 60 * time.Second,
+		HostFeatures: []string{provider.ErrorReasonsFeature, provider.TableOwnershipFeature}, StartupTimeout: 60 * time.Second,
 	})
 	c.Assert(err, qt.IsNil)
 	c.Cleanup(client.Close)

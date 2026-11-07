@@ -54,6 +54,7 @@ func TestRead_RichSchema(t *testing.T) {
 				Name: "parent", Comment: "parents",
 				Columns:    []catalog.Column{column(c, "id", "INTEGER", false), code, amount},
 				PrimaryKey: &catalog.Key{Name: "parent_id_pkey", Columns: []string{"id"}},
+				Uniques:    []catalog.Key{{Name: "parent_code_key", Columns: []string{"code"}}},
 				Checks:     []catalog.Check{{Name: "parent_amount_check", Columns: []string{"amount"}, Expression: "(amount > 0)"}},
 			},
 		},
@@ -129,8 +130,6 @@ func TestRead_FailurePath(t *testing.T) {
 		{"table macro", []string{"CREATE MACRO numbers(n) AS TABLE SELECT * FROM range(n)"},
 			`schema "main" holds table macro "numbers", which the provider does not read`},
 		{"named type", []string{"CREATE TYPE mood AS ENUM ('sad', 'ok')"}, `schema "main" holds type "mood", which the provider does not read`},
-		{"unique over two columns", []string{"CREATE TABLE t(a INTEGER, b INTEGER, UNIQUE (a, b))"},
-			`table "t" has the UNIQUE constraint "t_a_b_key" over 2 columns, which the provider does not read yet`},
 		{"two checks of one column", []string{"CREATE TABLE t(id INTEGER, CHECK (id > 0), CONSTRAINT named CHECK (id < 9))"},
 			`table "t" holds two constraints DuckDB names "t_id_check"; DuckDB keeps no constraint names, so a read cannot tell them apart`},
 		{"two foreign keys of one column", []string{
@@ -155,6 +154,31 @@ func TestRead_FailurePath(t *testing.T) {
 			c.Assert(read, qt.DeepEquals, catalog.Schema{})
 		})
 	}
+}
+
+// Every UNIQUE constraint is read with DuckDB's name and its columns in
+// order, and one over a single column is also its column's flag.
+func TestRead_UniqueConstraints(t *testing.T) {
+	c := testcheck.New(t)
+	handle := seedMemory(c, []string{"CREATE TABLE t(a INTEGER UNIQUE, b INTEGER, c INTEGER, UNIQUE (b, c), CONSTRAINT named UNIQUE (c, a))"})
+	read, err := catalog.Read(c.Context(), handle.Conn(), "memory", "main")
+	c.Assert(err, qt.IsNil)
+	c.Assert(read.Tables, qt.HasLen, 1)
+	c.Assert(read.Tables[0].Uniques, qt.DeepEquals, []catalog.Key{
+		{Name: "t_a_key", Columns: []string{"a"}}, {Name: "t_b_c_key", Columns: []string{"b", "c"}}, {Name: "t_c_a_key", Columns: []string{"c", "a"}},
+	})
+	c.Assert(uniqueColumns(read.Tables[0]), qt.DeepEquals, []string{"a"})
+}
+
+// uniqueColumns names the columns of table that state Unique.
+func uniqueColumns(table catalog.Table) []string {
+	var flagged []string
+	for _, column := range table.Columns {
+		if column.Unique {
+			flagged = append(flagged, column.Name)
+		}
+	}
+	return flagged
 }
 
 // A column's collation is read from the table's statement, which is the only

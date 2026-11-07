@@ -42,7 +42,7 @@ describe:
 | --- | --- |
 | A macro, scalar or table | The provider does not model macros yet. |
 | A type made with `CREATE TYPE` | The provider does not model named types yet. A column of such a type holds the type the name stands for and reads as that type. |
-| A `UNIQUE` constraint over more than one column | Ptah's observed table has no field for it. |
+| A `UNIQUE` constraint over more than one column, for a Ptah that does not read `schema.observed-unique-constraints` | Such a Ptah has no field for it. |
 | Two constraints of one table under one name, such as two `CHECK`s on the same column | DuckDB keeps no constraint names, so a read cannot tell them apart. |
 | A view that names its columns, and a comment on a view's column | The provider does not describe them yet. |
 | An index with a method other than DuckDB's ART index | The provider creates and reads ART indexes only. |
@@ -55,7 +55,7 @@ describe:
 | --- | --- |
 | An auto-increment or identity column; declare a sequence and `DEFAULT nextval('...')` | [Defaults and generated columns](declarations.md#defaults-and-generated-columns) |
 | A `STORED` generated column | [Defaults and generated columns](declarations.md#defaults-and-generated-columns) |
-| A `UNIQUE` over several columns or over an expression, and a constraint that is not enforced | [Keys and constraints](declarations.md#keys-and-constraints) |
+| A `UNIQUE` over an expression, one over several columns for a Ptah that does not read UNIQUE constraints, and a constraint that is not enforced | [Keys and constraints](declarations.md#keys-and-constraints) |
 | A foreign key rule other than `NO ACTION` or `RESTRICT`, a deferrable key, `MATCH`, a key into another schema | [Keys and constraints](declarations.md#keys-and-constraints) |
 | A partial index, another method, an operator class, `INCLUDE`, storage parameters, a key order or `NULLS` placement, `NULLS NOT DISTINCT`, an invisible index | [Indexes](declarations.md#indexes) |
 | A materialized view, `WITH CHECK OPTION`, a sequence with a cache, an owner or another type, a comment on a schema, a role, a grant | [Views, sequences, schemas and comments](declarations.md#views-sequences-schemas-and-comments) |

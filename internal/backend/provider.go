@@ -13,7 +13,9 @@
 // describes its scope completely or fails with a reason that names what it
 // does not describe.
 //
-// The provider owns the lifecycle of the engine's tables: ValidateSchema
+// The provider's planning service owns the engine's tables
+// (planning.table-ownership), and an enum column is DuckDB's ENUM type that
+// lists its values (schema.enum-columns): ValidateSchema
 // checks a declaration offline, the table services say how DuckDB holds a
 // declared table (asking a private in-memory database, see the scratch
 // package), and the planning service plans every create, change and drop as
@@ -38,7 +40,6 @@ import (
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/buildversion"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/instances"
-	"github.com/stokaro/ptah-duckdb-plugin/internal/ownership"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/scratch"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/tableop"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/tableplan"
@@ -62,12 +63,11 @@ const defaultSchema = "main"
 const semanticIdentity = "duckdb-1"
 
 // minimumContract is the oldest contract a host must speak to start the
-// provider: 25.30, which states that the host starts the provider in its own
-// working directory. A relative duckdb:// path resolves against that
-// directory, so under a host that did not promise it the same address could
-// name another file. The namespaces of 25.29 and the linked release lines of
-// 25.30 are negotiated.
-const minimumContract = 30
+// provider: 25.32, whose table ownership (planning.table-ownership) is the
+// provider's only claim on the engine's tables. A host of an earlier
+// contract would hand the provider no table to plan. 25.32 also states the
+// working directory a relative duckdb:// path resolves against (25.30).
+const minimumContract = 32
 
 // Provider serves the duckdb engine. The zero value is ready to use, and one
 // value serves every session of the process.
@@ -131,8 +131,11 @@ func providerFeatures() []string {
 		provider.ColumnsFeature,
 		provider.PlanFeaturesFeature,
 		provider.PlanningLifecycleFeature,
-		// A changed key and a changed CHECK or foreign key reach the planning
-		// service, which plans or refuses them by name.
+		// The planning service owns every table of the engine without a
+		// table setting model.
+		provider.TableOwnershipFeature,
+		// A changed key and a changed CHECK, foreign key or UNIQUE reach the
+		// planning service, which plans or refuses them by name.
 		provider.PrimaryKeyChangesFeature,
 		provider.ConstraintChangesFeature,
 		provider.CheckEquivalenceFeature,
@@ -160,11 +163,16 @@ func providerFeatures() []string {
 		provider.DevCleanupFeature,
 		provider.ReplayGuardFeature,
 		// A read reports each column whole, the primary key in key order,
-		// the CHECKs and foreign keys, and the indexes a table holds.
+		// the CHECKs, foreign keys and UNIQUE constraints, and the indexes a
+		// table holds; a column comparison states collation apart from the
+		// type; and an enum column reaches the provider as an ENUM type.
 		provider.ObservedColumnsFeature,
 		provider.ObservedPrimaryKeysFeature,
 		provider.ObservedConstraintsFeature,
+		provider.ObservedUniqueConstraintsFeature,
 		provider.ObservedIndexesFeature,
+		provider.ColumnCollationsFeature,
+		provider.EnumColumnsFeature,
 		// The provider normalizes its table operations.
 		provider.NormalizeValuesFeature,
 		// Views, sequences, comments and schemas travel on the common-object
@@ -194,9 +202,11 @@ func Description() *protocol.Description {
 			ReleaseLines:  releaseLines(),
 			Features:      providerFeatures(),
 			CommonObjects: &protocol.CommonObjectSupport{Kinds: commonObjectKinds()},
-			ValueModels:   append([]*protocol.ValueModel{tableop.Model()}, ownership.Models()...),
+			ValueModels:   []*protocol.ValueModel{tableop.Model()},
+			// DuckDB's type lists an enum column's values: ENUM('a', 'b').
+			EnumColumns: &protocol.EnumColumns{Form: protocol.EnumColumns_VALUES_TYPE},
 			Planning: []*protocol.ModelPlanning{{
-				Id: tableplan.ServiceID, ParentKinds: []string{ownership.Kind}, OperationKinds: []string{tableop.Kind},
+				Id: tableplan.ServiceID, OwnsTables: true, OperationKinds: []string{tableop.Kind},
 			}},
 		}},
 	}

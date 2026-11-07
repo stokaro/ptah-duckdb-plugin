@@ -48,7 +48,9 @@ executable links, version `2.0.0`. A Ptah that does not read linked release
 lines (`engine.linked-release-lines`) receives the line as best effort, with a
 reason that names the linked version.
 
-The provider needs a Ptah of provider contract 25.30 or later.
+The provider needs a Ptah of provider contract 25.32 or later that lists
+`planning.table-ownership`, the provider's only claim on DuckDB's tables. A
+Ptah that does not list it is refused when it starts the provider.
 
 ## Install and select the provider
 

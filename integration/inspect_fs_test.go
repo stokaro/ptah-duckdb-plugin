@@ -5,6 +5,7 @@ package integration_test
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 
 	qt "github.com/frankban/quicktest"
@@ -23,7 +24,8 @@ import (
 func readerFeatures() []string {
 	return []string{
 		provider.ErrorReasonsFeature, provider.ObservedColumnsFeature, provider.ObservedPrimaryKeysFeature,
-		provider.ObservedConstraintsFeature, provider.ObservedIndexesFeature, provider.CommonObjectsFeature, provider.CommonNamespacesFeature,
+		provider.ObservedConstraintsFeature, provider.ObservedUniqueConstraintsFeature, provider.ObservedIndexesFeature, provider.CommonObjectsFeature,
+		provider.CommonNamespacesFeature, provider.TableOwnershipFeature,
 	}
 }
 
@@ -235,4 +237,39 @@ func TestInspectUnknownSession_FailurePath(t *testing.T) {
 	snapshot, err := backend.New().Inspect(c.Context(), &protocol.InspectRequest{SessionId: "never-opened"})
 	c.Assert(status.Code(err), qt.Equals, codes.NotFound)
 	c.Assert(snapshot, qt.IsNil)
+}
+
+// A read reports every UNIQUE constraint to a host that reads them, and to
+// any other host a UNIQUE over one column as its column's flag alone, and a
+// UNIQUE over several columns not at all: it refuses the read.
+// A read reports each UNIQUE constraint, over one column or several, by
+// DuckDB's name and its columns in order to a host that reads UNIQUE
+// constraints. A host that does not is refused a table with one over several
+// columns, which it could not receive at all.
+func TestInspect_UniqueConstraints(t *testing.T) {
+	c := testcheck.New(t)
+	path := seedFile(c, "unique.duckdb", []string{"CREATE TABLE t(a INTEGER UNIQUE, b INTEGER, c INTEGER, UNIQUE (b, c))"})
+	snapshot, err := inspectAs(c, readerFeatures(), fileAddress(path))
+	c.Assert(err, qt.IsNil)
+	var constraints []string
+	for _, constraint := range snapshot.GetTables()[0].GetConstraints() {
+		constraints = append(constraints, constraint.GetType()+" "+constraint.GetName()+" "+strings.Join(constraint.GetColumnNames(), ","))
+	}
+	c.Assert(constraints, qt.DeepEquals, []string{"UNIQUE t_a_key a", "UNIQUE t_b_c_key b,c"})
+
+	snapshot, err = inspectAs(c, featuresWithout(provider.ObservedUniqueConstraintsFeature), fileAddress(path))
+	c.Assert(status.Code(err), qt.Equals, codes.FailedPrecondition)
+	c.Assert(status.Convert(err).Message(), qt.Equals, `table "main"."t" needs a host that reads schema.observed-unique-constraints`)
+	c.Assert(snapshot, qt.IsNil)
+}
+
+// A host that does not read UNIQUE constraints receives a UNIQUE over one
+// column as the column's flag.
+func TestInspect_AUniqueOverOneColumnForAnOlderHost(t *testing.T) {
+	c := testcheck.New(t)
+	path := seedFile(c, "single.duckdb", []string{"CREATE TABLE t(a INTEGER UNIQUE)"})
+	snapshot, err := inspectAs(c, featuresWithout(provider.ObservedUniqueConstraintsFeature), fileAddress(path))
+	c.Assert(err, qt.IsNil)
+	c.Assert(snapshot.GetTables()[0].GetConstraints(), qt.HasLen, 0)
+	c.Assert(snapshot.GetTables()[0].GetColumns()[0].GetObserved().GetUnique(), qt.IsTrue)
 }
