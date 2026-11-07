@@ -29,6 +29,23 @@ const (
 // indexed is a table with an index on its last column but one.
 var indexed = []string{"CREATE TABLE t (id INTEGER, a INTEGER, b INTEGER, c INTEGER)", "CREATE INDEX t_b ON t (b)"}
 
+// linked is a table another table's foreign key references, with no CHECK and
+// no index, so a change to either refuses for the reference alone; unlinked is
+// the same pair without the foreign key.
+var (
+	linked = []string{
+		"CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR NOT NULL UNIQUE, name VARCHAR)",
+		"CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users (id), title VARCHAR)",
+	}
+	unlinked = []string{
+		"CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR NOT NULL UNIQUE, name VARCHAR)",
+		"CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER, title VARCHAR)",
+	}
+)
+
+// linkedUsers is the users table of linked, as a schema file writes it.
+const linkedUsers = "CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR NOT NULL UNIQUE, name VARCHAR);\n"
+
 // keyed is a table with a primary key and a UNIQUE column.
 var keyed = []string{"CREATE TABLE k (id INTEGER PRIMARY KEY, a INTEGER UNIQUE, b INTEGER)"}
 
@@ -83,6 +100,27 @@ func TestHostRefusesWhatDuckDBCannotDo(t *testing.T) {
 		{"a table a foreign key references", referenced, "CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER, title VARCHAR, body VARCHAR);\n" +
 			"CREATE INDEX posts_title ON posts (title);\n",
 			`dropping table "users": the foreign key of table "posts" references it, and DuckDB drops no table a foreign key references`},
+		{"the type of a column of a table a foreign key references", linked,
+			"CREATE TABLE users (id INTEGER PRIMARY KEY, email VARCHAR NOT NULL UNIQUE, name BIGINT);\n" +
+				"CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users (id), title VARCHAR);\n",
+			`table "users": DuckDB changes no column's type, nullability or UNIQUE, and drops no column, while the foreign key of table "posts" references the table`},
+		{"a NOT NULL column added while an index stays", indexed,
+			"CREATE TABLE t (id INTEGER, a INTEGER, b INTEGER, c INTEGER, d INTEGER NOT NULL DEFAULT 0);\nCREATE INDEX t_b ON t (b);\n",
+			`table "t": DuckDB changes no column's type, nullability or UNIQUE, and drops no column, while index "t_b" exists; drop the index in this change to make it`},
+		{"a UNIQUE column added while an index stays", indexed,
+			"CREATE TABLE t (id INTEGER, a INTEGER, b INTEGER, c INTEGER, d INTEGER UNIQUE);\nCREATE INDEX t_b ON t (b);\n",
+			`table "t": DuckDB changes no column's type, nullability or UNIQUE, and drops no column, while index "t_b" exists; drop the index in this change to make it`},
+		{"the type of a foreign key column", linked,
+			linkedUsers + "CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id BIGINT REFERENCES users (id), title VARCHAR);\n",
+			`changing the type of column "user_id" of table "posts": DuckDB changes the type of no column in a FOREIGN KEY constraint`},
+		{"a dropped foreign key column", linked, linkedUsers + "CREATE TABLE posts (id INTEGER PRIMARY KEY, title VARCHAR);\n",
+			`table "posts": the declaration changes the table's foreign keys, and DuckDB adds and drops no foreign key on a table that exists`},
+		{"a foreign key added to a table that exists", unlinked,
+			linkedUsers + "CREATE TABLE posts (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users (id), title VARCHAR);\n",
+			`table "posts": the declaration changes the table's foreign keys, and DuckDB adds and drops no foreign key on a table that exists`},
+		{"a changed generated expression", []string{"CREATE TABLE g (a INTEGER, b INTEGER GENERATED ALWAYS AS (a * 2) VIRTUAL)"},
+			"CREATE TABLE g (a INTEGER, b INTEGER GENERATED ALWAYS AS (a * 3) VIRTUAL);\n",
+			`table "g": the declaration changes generated column "b", and DuckDB alters no generated column`},
 		{"a new generated column", keyed, "CREATE TABLE k (id INTEGER PRIMARY KEY, a INTEGER UNIQUE, b INTEGER, g INTEGER GENERATED ALWAYS AS (b * 2) VIRTUAL);",
 			`table "k": DuckDB adds no generated column to a table that exists; column "g"`},
 		{"a changed collation", []string{"CREATE TABLE n (a VARCHAR)"}, "CREATE TABLE n (a VARCHAR COLLATE nocase);",
@@ -127,4 +165,25 @@ func TestHostRefusesWhatDuckDBCannotDo(t *testing.T) {
 			c.Assert(rows(c, path, "SELECT sql FROM duckdb_tables() UNION ALL SELECT sql FROM duckdb_indexes() ORDER BY 1"), qt.DeepEquals, before)
 		})
 	}
+}
+
+// An index declared under another name is dropped and created under the new
+// one: DuckDB renames no index, and the provider does not ask Ptah for rename
+// steps, so a rename never reaches DuckDB. The index holds no rows, so nothing
+// is lost, and the next plan is synced.
+func TestHostRecreatesARenamedIndex(t *testing.T) {
+	c := testcheck.New(t)
+	path := seedFile(c, "renamed.duckdb", indexed)
+	schema := "CREATE TABLE t (id INTEGER, a INTEGER, b INTEGER, c INTEGER);\nCREATE INDEX t_b_renamed ON t (b);\n"
+
+	plan, err := planSchema(c, path, schema)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", plan))
+	output, err := applySchema(c, path, schema)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	again, err := planSchema(c, path, schema)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", again))
+
+	c.Assert(plan, qt.Equals, planned("DROP INDEX \"main\".\"t_b\";", "CREATE INDEX \"t_b_renamed\" ON \"main\".\"t\" (\"b\");"))
+	c.Assert(again, qt.Equals, synced)
+	c.Assert(rows(c, path, "SELECT index_name FROM duckdb_indexes() ORDER BY 1"), qt.DeepEquals, []string{"t_b_renamed"})
 }
