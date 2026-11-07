@@ -235,7 +235,8 @@ func (a *alteration) columnChanges() ([]columnChange, error) {
 			if err := a.typeChangeAllowed(name); err != nil {
 				return nil, err
 			}
-			changes = append(changes, columnChange{column: name, operation: tableop.Operation{Action: tableop.AlterColumnType, Name: name, Type: column.Type}, alters: true})
+			changes = append(changes, columnChange{column: name, alters: true, operation: tableop.Operation{Action: tableop.AlterColumnType, Name: name, Type: column.Type,
+				Declared: DeclaredLoss(a.desired, declaredColumn(a.desired, name))}})
 		}
 		if !sameText(column.Default, current.DefaultExpression) {
 			operation := tableop.Operation{Action: tableop.DropDefault, Name: name}
@@ -499,7 +500,7 @@ func (p *planner) emitColumns(a *alteration, changes []columnChange) (middle, st
 func (p *planner) emitChange(a *alteration, change columnChange) (*protocol.StepIdentity, error) {
 	var notes []string
 	if declared := declaredColumn(a.desired, change.column); declared != nil && change.operation.Action == tableop.AlterColumnType {
-		if note := LengthNote(a.subject, a.desired, declared); note != "" {
+		if note := TypeNote(a.subject, a.desired, declared); note != "" {
 			notes = []string{note}
 		}
 	}
@@ -598,7 +599,8 @@ func (p *planner) addColumn(a *alteration, common *protocol.CommonPlanningStep) 
 	column.Unique = false
 	var notes []string
 	if declared := declaredColumn(a.desired, name); declared != nil {
-		if note := LengthNote(a.subject, a.desired, declared); note != "" {
+		column.Declared = DeclaredLoss(a.desired, declared)
+		if note := TypeNote(a.subject, a.desired, declared); note != "" {
 			notes = append(notes, note)
 		}
 	}

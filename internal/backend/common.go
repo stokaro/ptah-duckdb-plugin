@@ -10,6 +10,7 @@ import (
 	providerruntime "github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/catalog"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/commonobject"
@@ -96,4 +97,43 @@ func (p *Provider) PrepareCommonObjects(ctx context.Context, request *protocol.P
 		return nil, providerruntime.ErrorWithReason(codes.InvalidArgument, err.Error())
 	}
 	return &protocol.PreparedCommonObjects{Complete: true, Prepared: prepared}, nil
+}
+
+// CompareViewQueries answers whether each declared view's query and the
+// query of the view DuckDB holds under its name are one query. DuckDB stores
+// a view's query as its parser writes it back, so the provider writes both
+// texts that way in the scratch database and compares them exactly: DuckDB's
+// writing is the same for one query whatever its spelling of keywords,
+// spacing and parentheses, and keeps what makes two queries differ, such as
+// the case of a column alias, which names the view's column. A text DuckDB
+// cannot parse is no query the held view could be, so the pair differs.
+func (p *Provider) CompareViewQueries(ctx context.Context, request *protocol.CompareViewQueriesRequest) (*protocol.ComparedViewQueries, error) {
+	result := &protocol.ComparedViewQueries{Complete: true}
+	for _, pair := range request.GetPairs() {
+		equivalent, err := p.sameQuery(ctx, pair.GetDeclared(), pair.GetCurrent().GetBody())
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, status.FromContextError(ctx.Err()).Err()
+			}
+			return nil, err
+		}
+		result.Queries = append(result.Queries, &protocol.ComparedViewQuery{Identity: proto.CloneOf(pair.GetCurrent().GetIdentity()), Equivalent: equivalent})
+	}
+	return result, nil
+}
+
+// sameQuery reports whether DuckDB writes the two queries back as one text.
+func (p *Provider) sameQuery(ctx context.Context, declared, held string) (bool, error) {
+	written := make([]string, 0, 2)
+	for _, query := range []string{declared, held} {
+		text, err := p.scratch.Query(ctx, query)
+		if errors.Is(err, scratch.ErrRefused) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		written = append(written, text)
+	}
+	return written[0] == written[1], nil
 }

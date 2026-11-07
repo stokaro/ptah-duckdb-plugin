@@ -3,15 +3,19 @@ package backend
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
+	"github.com/stokaro/ptah/provider-sdk/provider"
 	providerruntime "github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/commonobject"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/tableop"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/typeloss"
 )
 
 // Render writes the SQL statement of each table operation the provider
@@ -20,8 +24,14 @@ import (
 // one statement, so the executed units and a migration file hold the same
 // text. It connects to nothing. A change it cannot write refuses the whole
 // batch, so the host never receives part of a plan.
+//
+// For a host that lists render.omissions, the result also names each column
+// whose declared type states what DuckDB does not keep, such as the length of
+// a VARCHAR(255) that DuckDB creates as VARCHAR: the statement writes DuckDB's
+// type, and the omission says what the declaration lost (see typeloss).
 func (*Provider) Render(ctx context.Context, request *protocol.RenderRequest) (*protocol.RenderResult, error) {
 	result := &protocol.RenderResult{Complete: true}
+	reportOmissions := slices.Contains(request.GetTargetFeatures(), provider.RenderOmissionsFeature)
 	for _, change := range request.GetChanges() {
 		if err := ctx.Err(); err != nil {
 			return nil, status.FromContextError(err).Err()
@@ -34,8 +44,37 @@ func (*Provider) Render(ctx context.Context, request *protocol.RenderRequest) (*
 		// with one.
 		statement = strings.TrimRight(strings.TrimSpace(statement), ";") + ";"
 		result.Units = append(result.Units, &protocol.Unit{ChangeId: change.GetId(), Body: &protocol.Unit_Sql{Sql: statement}})
+		if reportOmissions {
+			result.Omissions = appendOmissions(result.GetOmissions(), change)
+		}
 	}
 	return result, nil
+}
+
+// appendOmissions adds the omissions of one change's table operation to
+// omissions, each once: a column whose declared type states what DuckDB does
+// not keep. Any other change omits nothing.
+func appendOmissions(omissions []*protocol.RenderOmission, change *protocol.Change) []*protocol.RenderOmission {
+	value := change.GetNative().GetValue().GetValue()
+	if value == nil {
+		return omissions
+	}
+	operation, err := tableop.Decode(value.GetPayload())
+	if err != nil {
+		return omissions
+	}
+	for _, declared := range operation.DeclaredTypes() {
+		loss, lost := typeloss.Of(declared.Type)
+		if !lost {
+			continue
+		}
+		omission := &protocol.RenderOmission{Reason: "unsupported", Kind: "column", Name: value.GetOwner().GetName() + "." + declared.Column,
+			Property: loss.Property, Detail: loss.Detail, Remedy: loss.Remedy}
+		if !slices.ContainsFunc(omissions, func(earlier *protocol.RenderOmission) bool { return proto.Equal(earlier, omission) }) {
+			omissions = append(omissions, omission)
+		}
+	}
+	return omissions
 }
 
 // renderChange writes the statement of one change.

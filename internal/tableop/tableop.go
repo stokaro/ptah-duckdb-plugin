@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/ddl"
+	"github.com/stokaro/ptah-duckdb-plugin/internal/typeloss"
 )
 
 // ProviderID is the provider that owns the operation model.
@@ -36,7 +37,7 @@ const Kind = ProviderID + "/table-operation"
 const Engine = "duckdb"
 
 const (
-	schemaVersion   = 2
+	schemaVersion   = 3
 	encoding        = "json"
 	canonicalFormat = Kind + "/json-v1"
 )
@@ -85,6 +86,10 @@ type Operation struct {
 	Name string `json:"name,omitempty"`
 	// Type is the type an alter-column-type gives the column.
 	Type string `json:"type,omitempty"`
+	// Declared is the type the declaration gives the column of an
+	// alter-column-type, where it states something DuckDB does not keep and
+	// Type holds instead; see Column.Declared.
+	Declared string `json:"declared,omitempty"`
 	// Default is the SQL that follows DEFAULT in a set-default.
 	Default string `json:"default,omitempty"`
 	// Key is the key an add-primary-key adds, in key order, or the columns
@@ -107,6 +112,10 @@ type Column struct {
 	Generated *string `json:"generated,omitempty"`
 	Unique    bool    `json:"unique,omitempty"`
 	Check     string  `json:"check,omitempty"`
+	// Declared is the type the declaration gives the column, where it states
+	// something DuckDB does not keep, such as VARCHAR(255) for the VARCHAR
+	// Type holds. It changes no statement; the render reports the omission.
+	Declared string `json:"declared,omitempty"`
 }
 
 // ForeignKey is a foreign key of a create-table, into the table's schema.
@@ -152,10 +161,12 @@ func buildModel() *protocol.ValueModel {
 			"column":      "add-column: one column without UNIQUE, CHECK or generated expression",
 			"name":        "the column an alter, drop-column or drop-default names, or the index a drop-index drops",
 			"type":        "alter-column-type: the type as DuckDB reads it",
-			"default":     "set-default: the SQL that follows DEFAULT",
-			"key":         "add-primary-key and add-unique: the columns in order",
-			"index":       "create-index: name, unique and key parts, each a column or an expression",
-			"tables":      "drop-tables: two or more distinct tables of the owner's schema in the order they are dropped, the owner first",
+			"declared": "alter-column-type, and a column of create-table or add-column: the declared type where it states a length or a precision " +
+				"DuckDB does not keep, which the render reports as left out",
+			"default": "set-default: the SQL that follows DEFAULT",
+			"key":     "add-primary-key and add-unique: the columns in order",
+			"index":   "create-index: name, unique and key parts, each a column or an expression",
+			"tables":  "drop-tables: two or more distinct tables of the owner's schema in the order they are dropped, the owner first",
 		},
 		"execution": "one statement; DuckDB runs every one inside a transaction",
 	})
@@ -268,7 +279,7 @@ var fields = map[Action][]string{
 	DropTable:       {},
 	AddColumn:       {"column"},
 	DropColumn:      {"name"},
-	AlterColumnType: {"name", "type"},
+	AlterColumnType: {"name", "type", "declared"},
 	SetDefault:      {"name", "default"},
 	DropDefault:     {"name"},
 	SetNotNull:      {"name"},
@@ -285,8 +296,9 @@ func (o Operation) present() []string {
 	var names []string
 	for name, set := range map[string]bool{
 		"columns": len(o.Columns) != 0, "primaryKey": len(o.PrimaryKey) != 0, "uniques": len(o.Uniques) != 0, "checks": len(o.Checks) != 0,
-		"foreignKeys": len(o.ForeignKeys) != 0, "column": o.Column != nil, "name": o.Name != "", "type": o.Type != "", "default": o.Default != "",
-		"key": len(o.Key) != 0, "index": o.Index != nil, "tables": len(o.Tables) != 0,
+		"foreignKeys": len(o.ForeignKeys) != 0, "column": o.Column != nil, "name": o.Name != "", "type": o.Type != "", "declared": o.Declared != "",
+		"default": o.Default != "",
+		"key":     len(o.Key) != 0, "index": o.Index != nil, "tables": len(o.Tables) != 0,
 	} {
 		if set {
 			names = append(names, name)
@@ -306,6 +318,11 @@ func (o Operation) statement(schema, table string) (string, error) {
 	for _, name := range o.present() {
 		if !slices.Contains(allowed, name) {
 			return "", fmt.Errorf("a %s operation does not take %s", o.Action, name)
+		}
+	}
+	for _, declared := range o.DeclaredTypes() {
+		if _, lost := typeloss.Of(declared.Type); !lost {
+			return "", fmt.Errorf("the %s operation declares column %q as %s, which DuckDB keeps whole", o.Action, declared.Column, declared.Type)
 		}
 	}
 	switch o.Action {
@@ -342,6 +359,32 @@ func (o Operation) statement(schema, table string) (string, error) {
 		return ddl.CreateIndex(schema, table, index)
 	}
 	return o.namedStatement(schema, table)
+}
+
+// DeclaredType is the type the declaration gives a column, where it states
+// something DuckDB does not keep.
+type DeclaredType struct {
+	Column, Type string
+}
+
+// DeclaredTypes lists the declared types an operation carries beside the
+// types it writes, in column order: those of a create-table's columns, an
+// add-column's column and an alter-column-type's column.
+func (o Operation) DeclaredTypes() []DeclaredType {
+	var declared []DeclaredType
+	columns := o.Columns
+	if o.Column != nil {
+		columns = append(slices.Clone(columns), *o.Column)
+	}
+	for _, column := range columns {
+		if column.Declared != "" {
+			declared = append(declared, DeclaredType{Column: column.Name, Type: column.Declared})
+		}
+	}
+	if o.Declared != "" {
+		declared = append(declared, DeclaredType{Column: o.Name, Type: o.Declared})
+	}
+	return declared
 }
 
 // namedStatement writes the SQL of an action that names one column or index

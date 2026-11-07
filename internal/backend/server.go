@@ -30,5 +30,6 @@ func Server() runtime.Server {
 		DevCleaner:      duckdb,
 		ReplayGuard:     duckdb,
 		CheckComparer:   duckdb,
+		ViewComparer:    duckdb,
 	}
 }
