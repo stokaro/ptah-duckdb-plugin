@@ -104,7 +104,8 @@ The provider does not lift that rule, and reports a conflict clearly:
   process ID: `another process (PID 4242) has the database file open for
   writing; DuckDB lets no other process open it until that one closes it`, or,
   when the holder only reads, that more processes may read the file with
-  `access_mode=read_only`.
+  `access_mode=read_only`. On Windows DuckDB names the holder but not its
+  access mode, and so does the reason.
 - Inside one provider process, every session of a file shares one instance,
   and a session that asks for the other access mode is refused by name
   (`FailedPrecondition`): DuckDB opens one file in one access mode per process.
@@ -197,15 +198,22 @@ library for (`go.duckdb.org/libduckdb`):
 | Windows | amd64 | `windows-2025` |
 
 There is no Windows arm64, musl (Alpine) or FreeBSD build: the driver ships no
-library for them, and a custom DuckDB build is not part of this release. Every
-other Ptah platform keeps working without DuckDB.
+library for them, and a custom DuckDB build is not part of this release. On
+Alpine the link fails, because the driver's Linux library needs glibc's
+`malloc_trim`, `backtrace` and `__res_init`. Every other Ptah platform keeps
+working without DuckDB.
 
 The executable links DuckDB statically, but not the C and C++ runtimes. The
 release job prints what each archive's executable needs
-(`scripts/report-runtime-deps.sh`): the shared libraries, and on Linux the
-newest glibc and libstdc++ symbol versions it binds; on macOS the oldest
-version it runs on, which the build sets to 13.0, the oldest the Go toolchain
-supports.
+(`scripts/report-runtime-deps.sh`). Measured on the release builds:
+
+- Linux, both architectures: `libc.so.6`, `libm.so.6`, `libstdc++.so.6` and
+  `libgcc_s.so.1`, with glibc 2.34 or newer and the libstdc++ of GCC 12 or
+  newer (`GLIBCXX_3.4.30`, `CXXABI_1.3.13`), as Ubuntu 22.04 and Debian 12
+  ship them.
+- macOS: the system's `libc++`, `libresolv`, CoreFoundation and Security, on
+  macOS 13 or newer; the build sets that minimum, the oldest the Go toolchain
+  supports.
 
 ## Build and test
 

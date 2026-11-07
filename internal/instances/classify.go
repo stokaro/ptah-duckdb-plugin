@@ -18,7 +18,10 @@ var lockHolder = regexp.MustCompile(`\(PID ([0-9]{1,10})\)`)
 //     <program> (PID <pid>) by user <user>.` when another process holds the
 //     file. When that process has it open read-only and this open asks to
 //     write, DuckDB adds `However, you would be able to open this database in
-//     read-only mode`.
+//     read-only mode`. Without that sentence the other process writes.
+//   - On Windows, `Cannot open file "<path>": <system message>File is already
+//     open in <program> (PID <pid>)`, the same conflict without the holder's
+//     access mode, so the reason does not claim one.
 //   - `Cannot open file "<path>": Permission denied` for a file the process
 //     may not write.
 //   - `Corrupt database file: computed checksum ... does not match stored
@@ -26,7 +29,7 @@ var lockHolder = regexp.MustCompile(`\(PID ([0-9]{1,10})\)`)
 func classifyOpen(err error, access Access) *Refusal {
 	text := err.Error()
 	switch {
-	case strings.Contains(text, "Could not set lock on file"):
+	case strings.Contains(text, "Could not set lock on file"), strings.Contains(text, "File is already open in"):
 		return refuse(codes.Unavailable, lockConflict(text))
 	case strings.Contains(text, "Permission denied") && access == ReadOnly:
 		return refuse(codes.PermissionDenied, "the provider may not read the database file")
@@ -44,8 +47,11 @@ func lockConflict(text string) string {
 	if match := lockHolder.FindStringSubmatch(text); match != nil {
 		holder += " (PID " + match[1] + ")"
 	}
-	if strings.Contains(text, "able to open this database in read-only mode") {
+	switch {
+	case strings.Contains(text, "able to open this database in read-only mode"):
 		return holder + " has the database file open read-only; DuckDB lets more processes read it with access_mode=read_only, and none write it"
+	case strings.Contains(text, "Conflicting lock is held in"):
+		return holder + " has the database file open for writing; DuckDB lets no other process open it until that one closes it"
 	}
-	return holder + " has the database file open for writing; DuckDB lets no other process open it until that one closes it"
+	return holder + " has the database file open; DuckDB lets one process write it or several read it, never both"
 }

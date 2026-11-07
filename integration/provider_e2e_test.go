@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"testing"
 
@@ -47,11 +48,10 @@ func TestProvidersCompeteForAFile(t *testing.T) {
 	c.Assert(err, qt.IsNil)
 
 	session, err := second.Open(c.Context(), openRequest(fileAddress(path)))
-	c.Assert(err, qt.ErrorMatches, `provider open session failed \(Unavailable\): another process \(PID [0-9]+\) has the database file open for writing; `+
-		`DuckDB lets no other process open it until that one closes it`)
+	c.Assert(err, qt.ErrorMatches, `provider open session failed \(Unavailable\): another process \(PID [0-9]+\) `+regexp.QuoteMeta(writerHoldsReason))
 	c.Assert(session, qt.IsNil)
 	session, err = second.Open(c.Context(), openRequest(fileAddress(path)+"?access_mode=read_only"))
-	c.Assert(err, qt.ErrorMatches, `provider open session failed \(Unavailable\): another process \(PID [0-9]+\) has the database file open for writing; .*`)
+	c.Assert(err, qt.ErrorMatches, `provider open session failed \(Unavailable\): another process \(PID [0-9]+\) `+regexp.QuoteMeta(writerHoldsReason))
 	c.Assert(session, qt.IsNil)
 
 	c.Assert(first.CloseSession(c.Context(), held.GetId()), qt.IsNil)
@@ -72,8 +72,7 @@ func TestProvidersShareAReadOnlyFile(t *testing.T) {
 	_, err = second.Open(c.Context(), openRequest(readOnly))
 	c.Assert(err, qt.IsNil)
 	session, err := third.Open(c.Context(), openRequest(fileAddress(path)))
-	c.Assert(err, qt.ErrorMatches, `provider open session failed \(Unavailable\): another process \(PID [0-9]+\) has the database file open read-only; `+
-		`DuckDB lets more processes read it with access_mode=read_only, and none write it`)
+	c.Assert(err, qt.ErrorMatches, `provider open session failed \(Unavailable\): another process \(PID [0-9]+\) `+regexp.QuoteMeta(readerHoldsReason))
 	c.Assert(session, qt.IsNil)
 }
 
@@ -86,8 +85,8 @@ func TestProviderReportsAnExternalWriter(t *testing.T) {
 	c.Assert(writer.PingContext(c.Context()), qt.IsNil)
 	client := startProvider(c)
 	session, err := client.Open(c.Context(), openRequest(fileAddress(path)))
-	c.Assert(err, qt.ErrorMatches, fmt.Sprintf(`provider open session failed \(Unavailable\): another process \(PID %s\) has the database file open for writing; .*`,
-		strconv.Itoa(os.Getpid())))
+	c.Assert(err, qt.ErrorMatches, fmt.Sprintf(`provider open session failed \(Unavailable\): another process \(PID %s\) %s`,
+		strconv.Itoa(os.Getpid()), regexp.QuoteMeta(writerHoldsReason)))
 	c.Assert(session, qt.IsNil)
 }
 

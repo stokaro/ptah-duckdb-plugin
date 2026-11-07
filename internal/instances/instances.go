@@ -90,7 +90,14 @@ func (r *Registry) OpenFile(ctx context.Context, path string, access Access) (*H
 	if !filepath.IsAbs(path) {
 		return nil, refuse(codes.InvalidArgument, "the provider opens a database file by its absolute path only")
 	}
-	existing, err := inspectFile(path, access)
+	// The driver's limits on a path come first, so a path Windows would
+	// refuse to stat, such as one with a question mark, is refused by name
+	// everywhere.
+	dsn, err := DSN(path, access)
+	if err != nil {
+		return nil, err
+	}
+	existing, err := statFile(path, access)
 	if err != nil {
 		return nil, err
 	}
@@ -100,15 +107,19 @@ func (r *Registry) OpenFile(ctx context.Context, path string, access Access) (*H
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// An instance this process holds comes before the file's header: on
+	// Windows, DuckDB's lock keeps every other handle from reading the file,
+	// this process's own included.
 	if open := r.findFile(canonical, existing); open != nil {
 		if open.access != access {
 			return nil, refuse(codes.FailedPrecondition, modeConflict(open.access))
 		}
 		return r.attach(ctx, open)
 	}
-	dsn, err := DSN(path, access)
-	if err != nil {
-		return nil, err
+	if existing != nil {
+		if err := checkHeader(path); err != nil {
+			return nil, err
+		}
 	}
 	connector, err := duckdb.NewConnector(dsn, nil)
 	if err != nil {
