@@ -7,7 +7,7 @@ toolchain go1.27.3
 require (
 	github.com/duckdb/duckdb-go/v2 v2.20000.0
 	github.com/frankban/quicktest v1.14.6
-	github.com/stokaro/ptah/provider-sdk v0.30.1-0.20261107163439-64dc845e91a2
+	github.com/stokaro/ptah/provider-sdk v0.31.0
 	golang.org/x/mod v0.41.0
 	golang.org/x/sys v0.49.0
 	google.golang.org/grpc v1.86.0-dev
