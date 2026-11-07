@@ -2,17 +2,22 @@
 // each statement is, for the host's assessment of the statements a plan or a
 // migration runs.
 //
-// The lexing follows DuckDB's: double-quoted identifiers and single-quoted
-// strings with doubled quotes, E'...' strings with backslash escapes, dollar-
-// quoted strings ($$...$$ and $tag$...$tag$), `--` and `/* */` comments, and a
-// semicolon that ends a statement outside a quote or a comment.
+// The lexing is DuckDB's, which is PostgreSQL's but for a segment that
+// continues an escape string, and comes from
+// github.com/stokaro/ptah/sqlsyntax/pgsyntax, the module the host reads the
+// PostgreSQL family with: quoted names, string constants, dollar-quoted
+// strings, nested block comments, and a semicolon that ends a statement
+// outside all of them.
 package sqltext
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"slices"
 	"strings"
+
+	"github.com/stokaro/ptah/sqlsyntax/pgsyntax"
 )
 
 // Kind is what a statement does.
@@ -43,42 +48,47 @@ type Statement struct {
 	Kind               Kind
 }
 
+// options are the lexical rules DuckDB reads text with, measured with
+// duckdb-go v2.20000.0 (DuckDB v2.0.0): PostgreSQL's with
+// standard_conforming_strings on, and a segment that continues an escape
+// string scanned as an ordinary string.
+var options = pgsyntax.Options{PlainContinuations: true}
+
 // Split splits a text into statements. Every byte of the text belongs to a
 // statement or is white space between statements: a comment before a
-// statement starts it, and a comment after the last one ends it.
+// statement starts it, and a comment after the last one ends it. A string, a
+// quoted name, a dollar-quoted string or a block comment that does not close
+// fails the whole text, naming the line it opens on.
 func Split(text string) ([]Statement, error) {
 	if uint64(len(text)) > math.MaxUint32 {
 		return nil, fmt.Errorf("a SQL text is larger than the protocol can address")
 	}
+	tokens, err := pgsyntax.Scan(text, options)
+	if err != nil {
+		return nil, lexError(text, err)
+	}
 	var statements []Statement
 	start := -1
-	var source []string
+	var source []pgsyntax.Token
 	finish := func(end int) {
 		statements = append(statements, classify(text, start, end, source))
 		start, source = -1, nil
 	}
-	for position := 0; position < len(text); {
-		if isSpace(text[position]) {
-			position++
+	for _, token := range tokens {
+		if token.Kind == pgsyntax.Whitespace {
 			continue
 		}
 		if start < 0 {
-			start = position
+			start = token.Start
 		}
-		end, err := tokenEnd(text, position)
-		if err != nil {
-			return nil, err
-		}
-		token := text[position:end]
-		position = end
 		switch {
-		case strings.HasPrefix(token, "--") || strings.HasPrefix(token, "/*"):
+		case token.Kind == pgsyntax.LineComment || token.Kind == pgsyntax.BlockComment:
 			continue
-		case token == ";":
+		case token.Kind == pgsyntax.Punctuation && text[token.Start] == ';':
 			if len(source) == 0 {
-				return nil, fmt.Errorf("an empty statement ends on line %d", 1+strings.Count(text[:end], "\n"))
+				return nil, fmt.Errorf("an empty statement ends on line %d", 1+strings.Count(text[:token.End], "\n"))
 			}
-			finish(end)
+			finish(token.End)
 		default:
 			source = append(source, token)
 		}
@@ -95,139 +105,30 @@ func Split(text string) ([]Statement, error) {
 	return statements, nil
 }
 
-// operators are the characters an operator token is made of.
-const operators = "+-*/<>=!~%^&|?:#@"
-
-// tokenEnd returns where the token that starts at position ends.
-func tokenEnd(text string, position int) (int, error) {
-	character := text[position]
-	switch {
-	case strings.HasPrefix(text[position:], "--") || strings.HasPrefix(text[position:], "/*"):
-		return commentEnd(text, position)
-	case (character == 'e' || character == 'E') && position+1 < len(text) && text[position+1] == '\'':
-		return escapedEnd(text, position+1)
-	case character == '"' || character == '\'':
-		return quotedEnd(text, position, character)
-	case character == '$':
-		return dollarEnd(text, position)
-	case strings.IndexByte("(),;[].{}", character) >= 0:
-		return position + 1, nil
-	case isWordStart(character):
-		return runEnd(text, position, isWordPart), nil
-	case character >= '0' && character <= '9':
-		return runEnd(text, position, isNumberPart), nil
-	case strings.IndexByte(operators, character) >= 0:
-		return operatorEnd(text, position), nil
-	default:
-		return 0, fmt.Errorf("the SQL text holds a character the provider does not read on line %d", 1+strings.Count(text[:position], "\n"))
+// lexError places a scanner's refusal on the line its construct opens on.
+func lexError(text string, err error) error {
+	syntax, ok := errors.AsType[*pgsyntax.SyntaxError](err)
+	if !ok {
+		return err
 	}
+	return fmt.Errorf("%s on line %d", syntax.Reason, 1+strings.Count(text[:syntax.Offset], "\n"))
 }
 
-// commentEnd returns the end of the comment at position: a line comment ends
-// before its newline, a block comment after its closing mark.
-func commentEnd(text string, position int) (int, error) {
-	if strings.HasPrefix(text[position:], "--") {
-		if newline := strings.IndexByte(text[position:], '\n'); newline >= 0 {
-			return position + newline, nil
-		}
-		return len(text), nil
-	}
-	end := strings.Index(text[position+2:], "*/")
-	if end < 0 {
-		return 0, fmt.Errorf("a comment is not closed")
-	}
-	return position + 2 + end + 2, nil
-}
-
-// dollarEnd returns the end of a dollar-quoted string, or of a parameter
-// such as $1.
-func dollarEnd(text string, position int) (int, error) {
-	tagEnd := position + 1
-	for tagEnd < len(text) && (isWordPart(text[tagEnd]) && text[tagEnd] != '$') {
-		tagEnd++
-	}
-	if tagEnd >= len(text) || text[tagEnd] != '$' {
-		if tagEnd > position+1 && text[position+1] >= '0' && text[position+1] <= '9' {
-			return tagEnd, nil
-		}
-		return 0, fmt.Errorf("a dollar sign that starts no quote or parameter on line %d", 1+strings.Count(text[:position], "\n"))
-	}
-	tag := text[position : tagEnd+1]
-	closing := strings.Index(text[tagEnd+1:], tag)
-	if closing < 0 {
-		return 0, fmt.Errorf("a dollar-quoted string is not closed")
-	}
-	return tagEnd + 1 + closing + len(tag), nil
-}
-
-// escapedEnd returns the end of an E'...' string, where a backslash escapes the
-// next character and a doubled quote stands for one.
-func escapedEnd(text string, quote int) (int, error) {
-	for end := quote + 1; end < len(text); end++ {
-		switch {
-		case text[end] == '\\':
-			end++
-		case text[end] == '\'' && end+1 < len(text) && text[end+1] == '\'':
-			end++
-		case text[end] == '\'':
-			return end + 1, nil
-		}
-	}
-	return 0, fmt.Errorf("a string is not closed")
-}
-
-// runEnd returns the end of the run of characters part accepts that starts
-// at position.
-func runEnd(text string, position int, part func(byte) bool) int {
-	end := position + 1
-	for end < len(text) && part(text[end]) {
-		end++
-	}
-	return end
-}
-
-// operatorEnd returns the end of an operator, which stops before a comment.
-func operatorEnd(text string, position int) int {
-	end := position + 1
-	for end < len(text) && strings.IndexByte(operators, text[end]) >= 0 && !strings.HasPrefix(text[end:], "--") && !strings.HasPrefix(text[end:], "/*") {
-		end++
-	}
-	return end
-}
-
-func isNumberPart(character byte) bool {
-	return character >= '0' && character <= '9' || character == '.' || character == 'e' || character == 'E' || character == '_'
-}
-
-// quotedEnd returns the end of a quoted identifier or string, where a doubled
-// quote stands for one.
-func quotedEnd(text string, position int, quote byte) (int, error) {
-	for end := position + 1; end < len(text); end++ {
-		if text[end] != quote {
-			continue
-		}
-		if end+1 < len(text) && text[end+1] == quote {
-			end++
-			continue
-		}
-		return end + 1, nil
-	}
-	if quote == '"' {
-		return 0, fmt.Errorf("a quoted name is not closed")
-	}
-	return 0, fmt.Errorf("a string is not closed")
-}
-
-// classify describes the statement spanning text[start:end].
-func classify(text string, start, end int, source []string) Statement {
+// classify describes the statement spanning text[start:end], whose tokens
+// are source with white space and comments left out. An unquoted word, which
+// DuckDB reads in any case, is upper-cased in Words; a string such as E'x' is
+// not a word.
+func classify(text string, start, end int, source []pgsyntax.Token) Statement {
+	written := make([]string, len(source))
 	words := make([]string, len(source))
-	for i, word := range source {
-		words[i] = word
-		if isWord(word) {
-			words[i] = strings.ToUpper(word)
+	for i, token := range source {
+		written[i] = token.Text(text)
+		words[i] = written[i]
+		if token.Kind == pgsyntax.Word {
+			words[i] = strings.ToUpper(written[i])
 		}
 	}
-	return Statement{Start: start, End: end, Line: 1 + strings.Count(text[:start], "\n"), SourceWords: source, Words: words, Kind: kindOf(words)}
+	return Statement{Start: start, End: end, Line: 1 + strings.Count(text[:start], "\n"), SourceWords: written, Words: words, Kind: kindOf(words)}
 }
 
 // schemaObjects are the objects whose CREATE, DROP and ALTER are schema
@@ -256,28 +157,4 @@ func kindOf(words []string) Kind {
 		}
 	}
 	return Other
-}
-
-func isSpace(character byte) bool { return strings.IndexByte(" \t\r\n\f\v", character) >= 0 }
-
-func isWordStart(character byte) bool {
-	return character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character == '_' || character >= 0x80
-}
-
-// isWord reports whether a token is an unquoted word, which DuckDB reads in
-// any case; a string such as E'x' starts with a letter and is not one.
-func isWord(token string) bool {
-	if !isWordStart(token[0]) {
-		return false
-	}
-	for i := 1; i < len(token); i++ {
-		if !isWordPart(token[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-func isWordPart(character byte) bool {
-	return isWordStart(character) || character >= '0' && character <= '9' || character == '$'
 }

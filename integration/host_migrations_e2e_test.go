@@ -214,3 +214,25 @@ func TestHostRefusesADevDatabaseOfAnotherVersion(t *testing.T) {
 	c.Assert(err, qt.ErrorMatches, "exit status [0-9]+")
 	c.Assert(output, qt.Contains, "provider engine duckdb does not provision this dev database: the provider links DuckDB 2.0.0 and provisions that version only")
 }
+
+// A migration body holds what DuckDB reads as PostgreSQL does, each with a
+// semicolon or an apostrophe inside: a nested block comment, a dollar-quoted
+// string and a string continued on the next line. It also holds DuckDB's own
+// reading of an escape string continued by a segment that ends in a
+// backslash, which DuckDB scans as an ordinary string. The provider splits
+// the body where DuckDB does, so each statement runs once and the rows hold
+// what DuckDB made of the text.
+func TestHostRunsAMigrationDuckDBReadsAsPostgreSQLDoes(t *testing.T) {
+	c := testcheck.New(t)
+	path := filepath.Join(c.TempDir(), "text.duckdb")
+	dir := writeFiles(c, map[string]string{
+		"1_text.up.sql": "CREATE TABLE notes (id INTEGER, body VARCHAR); /* a /* nested */ it's; a comment */\n" +
+			"INSERT INTO notes VALUES (1, $$it's; one$$);\n" +
+			"INSERT INTO notes VALUES (2, E'a'\n'b\\'); INSERT INTO notes VALUES (3, 'x'\n'y');\n",
+		"1_text.down.sql": "DROP TABLE notes;\n",
+	})
+	output, err := hostCommand(c, "migrations", "up", "--db-url", fileAddress(path), "--migrations-dir", dir)
+	c.Assert(err, qt.IsNil, qt.Commentf("%s", output))
+	c.Assert(rows(c, path, "SELECT id, body FROM notes ORDER BY id"), qt.DeepEquals, []string{"1|it's; one", `2|ab\`, "3|xy"})
+	c.Assert(rows(c, path, "SELECT version, state, applied, total FROM schema_migrations"), qt.DeepEquals, []string{"1|applied|4|4"})
+}

@@ -58,6 +58,20 @@ func TestSplit_HappyPath(t *testing.T) {
 			{"SELECT a::INTEGER, b->>'k', $1 FROM t WHERE c <> 1;", 1,
 				[]string{"SELECT", "A", "::", "INTEGER", ",", "B", "->>", "'k'", ",", "$1", "FROM", "T", "WHERE", "C", "<>", "1"}, sqltext.Data},
 		}},
+		// Measured with duckdb-go v2.20000.0 (DuckDB v2.0.0): a nested comment
+		// is one comment, a string continues on the next line, and a segment
+		// that continues an escape string is an ordinary string, so the
+		// backslash before its quote does not escape it and both CREATE TABLE
+		// statements ran.
+		{"what DuckDB reads as PostgreSQL does, and its continued escape string",
+			"SELECT /* a /* b; */ c */ 'x;'\n'y';\nCREATE TABLE r AS SELECT E'a'\n'b\\' AS v; CREATE TABLE s AS SELECT 1 AS w;", []statement{
+				{"SELECT /* a /* b; */ c */ 'x;'\n'y';", 1, []string{"SELECT", "'x;'", "'y'"}, sqltext.Data},
+				{"CREATE TABLE r AS SELECT E'a'\n'b\\' AS v;", 3, []string{"CREATE", "TABLE", "R", "AS", "SELECT", "E'a'", "'b\\'", "AS", "V"}, sqltext.Schema},
+				{"CREATE TABLE s AS SELECT 1 AS w;", 4, []string{"CREATE", "TABLE", "S", "AS", "SELECT", "1", "AS", "W"}, sqltext.Schema},
+			}},
+		{"a dollar sign and a backtick are left to the server", "SELECT $ 1, `a`", []statement{
+			{"SELECT $ 1, `a`", 1, []string{"SELECT", "$", "1", ",", "`", "A", "`"}, sqltext.Data},
+		}},
 		{"an empty text", " \n\t", nil},
 	}
 	for _, tc := range tests {
@@ -91,15 +105,13 @@ func TestSplit_FailurePath(t *testing.T) {
 		text string
 		want string
 	}{
-		{"an unclosed string", "SELECT 'a;", "a string is not closed"},
-		{"an unclosed escaped string", `SELECT E'a\'`, "a string is not closed"},
-		{"an unclosed name", `SELECT "a`, "a quoted name is not closed"},
-		{"an unclosed comment", "SELECT 1 /* x", "a comment is not closed"},
-		{"an unclosed dollar quote", "SELECT $$a", "a dollar-quoted string is not closed"},
-		{"a stray dollar sign", "SELECT $ 1", "a dollar sign that starts no quote or parameter on line 1"},
+		{"an unclosed string", "SELECT 'a;", "a string does not close on line 1"},
+		{"an unclosed escaped string", `SELECT E'a\'`, "a string does not close on line 1"},
+		{"an unclosed name", `SELECT "a`, "a quoted identifier does not close on line 1"},
+		{"an unclosed nested comment", "SELECT 1;\n/* x /* y */", "a block comment does not close on line 2"},
+		{"an unclosed dollar quote", "SELECT $$a", `a dollar-quoted string \$\$ does not close on line 1`},
 		{"an empty statement", "SELECT 1;\n;", "an empty statement ends on line 2"},
 		{"comments alone", "-- nothing\n/* here */", "the SQL text holds comments and no statement"},
-		{"a character DuckDB does not read", "SELECT `a`", "the SQL text holds a character the provider does not read on line 1"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
