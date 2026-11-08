@@ -12,6 +12,33 @@ apply`, `ptah migrations generate`, `up`, `down`, `status`, `tag`, `log` and
 `lint` work through it, with a dev database where a command takes one. Each
 service is advertised in the description only when it exists.
 
+## Install
+
+Install the provider with Ptah's own command:
+
+```sh
+ptah providers install duckdb
+```
+
+The command installs the newest release whose minimum provider contract the
+running Ptah meets. It checks the archive against the release's
+`checksums.txt` and stores the executable in Ptah's user cache directory. It
+does not run the executable and does not edit a manifest. To install a chosen
+release, add `--version`, for example `--version 0.2.0`.
+
+After the install, a command that names a `duckdb://` URL or the `duckdb`
+dialect uses the provider without a flag or a manifest. Check the installed
+copy:
+
+```sh
+ptah providers check --provider-engine duckdb --json
+```
+
+The check reports `"status": "compatible"` when Ptah can run the provider, and
+`provider_missing` when no copy is installed.
+[Install an official provider](https://docs.ptah.run/edge/extend/executable-providers/#install-an-official-provider)
+says how a release is chosen, what is checked and where the file is stored.
+
 ## The embedded DuckDB
 
 DuckDB is embedded through the official Go driver,
