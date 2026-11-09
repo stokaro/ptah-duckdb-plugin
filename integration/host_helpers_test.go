@@ -53,6 +53,12 @@ func hostManifest(c *qt.C) (host, manifest string) {
 // later commit and release orders after its pseudo-version.
 const viewQueriesSince = "v0.30.1-0.20261107163439-64dc845e91a2"
 
+// providerSDKModules are the module paths a host binary links the provider SDK
+// under: ptah.run/provider-sdk, or, for Ptah releases up to v0.25.0, the GitHub
+// path that SDK releases up to v0.39.0 declare. The SDK kept one version
+// sequence across both, so a version read under either compares with the other.
+var providerSDKModules = []string{"ptah.run/provider-sdk", "github.com/stokaro/ptah/provider-sdk"}
+
 // hostComparesViewQueries reports whether the host asks the provider whether
 // two view queries are one, by the provider-sdk the host binary was built
 // with. A host that predates the call compares view queries by its own fold
@@ -62,7 +68,7 @@ func hostComparesViewQueries(c *qt.C) bool {
 	host, _ := hostManifest(c)
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
-	index := slices.IndexFunc(info.Deps, func(module *debug.Module) bool { return module.Path == "ptah.run/provider-sdk" })
+	index := slices.IndexFunc(info.Deps, func(module *debug.Module) bool { return slices.Contains(providerSDKModules, module.Path) })
 	c.Assert(index >= 0, qt.IsTrue, qt.Commentf("the host binary %s names no provider-sdk", host))
 	return semver.Compare(info.Deps[index].Version, viewQueriesSince) >= 0
 }
