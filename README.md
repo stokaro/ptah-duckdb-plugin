@@ -3,7 +3,7 @@
 This repository holds the executable DuckDB provider for
 [Ptah #5667](https://github.com/stokaro/ptah/issues/5667). Ptah starts it as a
 subprocess and talks to it over the provider protocol of
-`github.com/stokaro/ptah/provider-sdk`.
+`ptah.run/provider-sdk`.
 
 The provider opens DuckDB database files and in-memory databases, reads their
 schemas completely or refuses the read by name, plans, renders and runs
@@ -534,8 +534,8 @@ release job prints what each archive's executable needs
 
 ## Build and test
 
-The module pins the experimental SDK, `github.com/stokaro/ptah/provider-sdk`,
-by version and has no `replace` directive. It needs neither the Ptah source
+The module pins the experimental SDK, `ptah.run/provider-sdk`, by version and
+has no `replace` directive. It needs neither the Ptah source
 nor a local SDK checkout. Building needs cgo and a C toolchain: the system
 compiler on Linux and macOS, MinGW-w64 GCC on Windows (see the driver's
 README). A build with `CGO_ENABLED=0` fails to compile rather than produce a

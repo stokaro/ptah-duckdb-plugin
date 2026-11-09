@@ -7,10 +7,10 @@ import (
 	"os"
 	"runtime"
 
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
-	providerruntime "github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	protocol "ptah.run/provider-sdk/protocol/experimental"
+	providerruntime "ptah.run/provider-sdk/runtime"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/address"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/instances"

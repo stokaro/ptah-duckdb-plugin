@@ -5,10 +5,10 @@ import (
 	"database/sql"
 	"slices"
 
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
-	"github.com/stokaro/ptah/provider-sdk/provider"
-	providerruntime "github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
+	protocol "ptah.run/provider-sdk/protocol/experimental"
+	"ptah.run/provider-sdk/provider"
+	providerruntime "ptah.run/provider-sdk/runtime"
 )
 
 // transactionLimit bounds the handles one session keeps. A finished handle

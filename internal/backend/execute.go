@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/duckdb/duckdb-go/v2"
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
-	providerruntime "github.com/stokaro/ptah/provider-sdk/runtime"
 	"google.golang.org/grpc/codes"
+	protocol "ptah.run/provider-sdk/protocol/experimental"
+	providerruntime "ptah.run/provider-sdk/runtime"
 )
 
 // Execute runs the units of one request in order and reports how many of them

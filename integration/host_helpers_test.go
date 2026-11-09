@@ -62,7 +62,7 @@ func hostComparesViewQueries(c *qt.C) bool {
 	host, _ := hostManifest(c)
 	info, err := buildinfo.ReadFile(host)
 	c.Assert(err, qt.IsNil)
-	index := slices.IndexFunc(info.Deps, func(module *debug.Module) bool { return module.Path == "github.com/stokaro/ptah/provider-sdk" })
+	index := slices.IndexFunc(info.Deps, func(module *debug.Module) bool { return module.Path == "ptah.run/provider-sdk" })
 	c.Assert(index >= 0, qt.IsTrue, qt.Commentf("the host binary %s names no provider-sdk", host))
 	return semver.Compare(info.Deps[index].Version, viewQueriesSince) >= 0
 }
