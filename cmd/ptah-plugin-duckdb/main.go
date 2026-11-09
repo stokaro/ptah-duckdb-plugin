@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/stokaro/ptah/provider-sdk/runtime"
+	"ptah.run/provider-sdk/runtime"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/backend"
 )

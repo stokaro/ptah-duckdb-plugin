@@ -4,7 +4,7 @@
 //
 // The lexing is DuckDB's, which is PostgreSQL's but for a segment that
 // continues an escape string, and comes from
-// github.com/stokaro/ptah/sqlsyntax/pgsyntax, the module the host reads the
+// ptah.run/sqlsyntax/pgsyntax, the module the host reads the
 // PostgreSQL family with: quoted names, string constants, dollar-quoted
 // strings, nested block comments, and a semicolon that ends a statement
 // outside all of them.
@@ -17,7 +17,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/stokaro/ptah/sqlsyntax/pgsyntax"
+	"ptah.run/sqlsyntax/pgsyntax"
 )
 
 // Kind is what a statement does.

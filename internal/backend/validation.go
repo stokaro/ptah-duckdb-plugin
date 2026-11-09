@@ -3,8 +3,8 @@ package backend
 import (
 	"context"
 
-	protocol "github.com/stokaro/ptah/provider-sdk/protocol/experimental"
 	"google.golang.org/grpc/status"
+	protocol "ptah.run/provider-sdk/protocol/experimental"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/commonobject"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/tableplan"

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	qt "github.com/frankban/quicktest"
-	"github.com/stokaro/ptah/provider-sdk/conformance"
+	"ptah.run/provider-sdk/conformance"
 
 	"github.com/stokaro/ptah-duckdb-plugin/internal/backend"
 	"github.com/stokaro/ptah-duckdb-plugin/internal/testcheck"
