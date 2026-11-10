@@ -41,7 +41,7 @@ func TestOpen_FileSession(t *testing.T) {
 	// No host feature is negotiated here, so every two-way feature is left
 	// out of the session's features.
 	c.Assert(first.GetFeatures(), qt.DeepEquals, []string{
-		provider.InspectFeature, provider.RenderFeature, provider.ExecuteFeature, provider.AnalyzeSQLFeature, provider.ValidateSchemaFeature,
+		"security.vulnerability-scan-not-applicable", provider.InspectFeature, provider.RenderFeature, provider.ExecuteFeature, provider.AnalyzeSQLFeature, provider.ValidateSchemaFeature,
 		provider.PrepareTablesFeature, provider.ProjectTableCreationsFeature, provider.PlanFeaturesFeature, provider.CheckEquivalenceFeature,
 		provider.LocksFeature, provider.TransactionsFeature, provider.HistoryFeature, provider.MetadataFeature, provider.DevDatabaseFeature,
 		provider.DevCleanupFeature, provider.ReplayGuardFeature, provider.NormalizeValuesFeature, provider.ViewQueryEquivalenceFeature,
