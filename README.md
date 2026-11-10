@@ -12,6 +12,10 @@ apply`, `ptah migrations generate`, `up`, `down`, `status`, `tag`, `log` and
 `lint` work through it, with a dev database where a command takes one. Each
 service is advertised in the description only when it exists.
 
+## Server vulnerability scans
+
+DuckDB runs as a library inside the provider and opens a local file or an in-memory database. It does not expose a separately patched database server. The provider advertises `security.vulnerability-scan-not-applicable` for the engine, so `ptah db vulnerabilities` reports `not_applicable` instead of treating an empty advisory list as a clean scan. This does not assess vulnerabilities in the DuckDB library bundled with the provider.
+
 ## Install
 
 Install the provider with Ptah's own command:

@@ -117,6 +117,8 @@ func New() *Provider { return &Provider{} }
 // providerFeatures are the services and behaviors the provider offers.
 func providerFeatures() []string {
 	return []string{
+		// DuckDB is embedded in the application, so a server patch scan does not apply.
+		"security.vulnerability-scan-not-applicable",
 		provider.InspectFeature,
 		provider.RenderFeature,
 		provider.ExecuteFeature,

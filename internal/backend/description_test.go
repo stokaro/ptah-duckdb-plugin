@@ -58,7 +58,7 @@ func TestDescription_ListsTheFeatures(t *testing.T) {
 	c := testcheck.New(t)
 	description := backend.Description()
 	want := []string{
-		provider.InspectFeature, provider.RenderFeature, provider.ExecuteFeature, provider.AnalyzeSQLFeature, provider.ErrorReasonsFeature,
+		"security.vulnerability-scan-not-applicable", provider.InspectFeature, provider.RenderFeature, provider.ExecuteFeature, provider.AnalyzeSQLFeature, provider.ErrorReasonsFeature,
 		provider.ValidateSchemaFeature, provider.PrepareTablesFeature, provider.ProjectTableCreationsFeature, provider.ColumnsFeature,
 		provider.PlanFeaturesFeature, provider.PlanningLifecycleFeature, provider.TableOwnershipFeature, provider.PrimaryKeyChangesFeature,
 		provider.ConstraintChangesFeature, provider.CheckEquivalenceFeature, provider.PlanningPolicyFeature, provider.PlanningStatementStyleFeature,
